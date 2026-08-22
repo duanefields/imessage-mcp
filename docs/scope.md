@@ -244,26 +244,33 @@ no way to write anything.
 Still open, and not blocking: the healthcheck is configured but not yet on cron, and
 `self-update.sh` is not set up.
 
-### Milestone 2: sending -- **built, one step unverified**
+### Milestone 2: sending -- **complete**
 
-8. `applescript.py` and `send_message`, restricted to existing chats. **Built.** What is verified
-   without sending anything: the AppleScript compiles, reaches Messages, and resolves a database
-   `chat.guid` through `chat id`; a nonexistent chat fails with `-1728` and the error reaches the
-   caller. What is not verified is the `send` verb itself.
-9. Send one message to yourself, at the host, before this is reachable remotely.
+8. `applescript.py` and `send_message`, restricted to existing chats. **Done.**
+9. Send a real message. **Done**, with a reply received back. The sent row landed with
+   `is_sent=1`, `is_delivered=1`, `error=0`, and `find_outgoing` confirmed it -- so the post-send
+   confirmation is verified against real data, not just a fixture.
 
 Text and chat id are passed to `osascript` as **arguments**, never interpolated into the script.
 Escaping quotes and backslashes by hand is the usual approach and the usual bug; as argv there is
 nothing to escape, and a message containing `"` or `$(...)` is just data.
 
-The first send raises the Automation consent prompt, which **cannot be pre-granted** -- System
-Settings only lists pairs macOS has already recorded. Two things follow:
+#### What the first real send taught us
 
-- It must be triggered by the process that will really do it. macOS records the grant against the
-  *responsible* process, so answering a prompt raised from an SSH shell grants a different pair
-  than the LaunchAgent needs. Trigger it from the service and answer it on the host's own screen.
-- Until it is answered the call blocks. `send_to_chat` therefore has a 30 second timeout whose
-  error names the consent dialog, rather than hanging a remote tool call forever.
+**You cannot message yourself.** The self-threads in the database -- one per account address --
+are stale artifacts Messages will not address, and AppleScript answers `-1728` for them. They are
+also too old to appear in `list_chats`, so the obvious "send a test message to myself" plan fails
+twice over. Test against a real conversation instead.
+
+**Chat guids are not all `iMessage;-;`.** Every one of the 1,302 chats on the host uses an `any;`
+prefix. It resolves fine -- 12 of 12 recent ones did -- so do not filter on the prefix or assume
+its shape.
+
+**Apple Events permission is per responsible process.** A grant answered from an SSH session is
+recorded against the SSH daemon and does nothing for the LaunchAgent. On this host the service
+already held its own grant, so no dialog ever appeared; do not conclude from that that granting
+can be skipped elsewhere. `send_to_chat` keeps its 30 second timeout for the case where a dialog
+does block, with an error that names the dialog rather than hanging a remote tool call forever.
 
 ### Later
 
