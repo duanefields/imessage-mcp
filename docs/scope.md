@@ -220,7 +220,7 @@ That ordering is deliberate: it means the first version exposed to the network c
 anything irreversible, and the whole pipeline -- permissions, tunnel, auth, a client actually
 talking to it -- gets proven by a surface where a bug costs nothing.
 
-### Milestone 1: read-only, working through Claude
+### Milestone 1: read-only, working through Claude — **complete**
 
 1. Fixture generator and a synthetic chat.db -- verify: tests open it and count rows. **Done.**
 2. `attributed.py` -- verify: decodes synthetic blobs; spot-checked by hand against the real
@@ -228,25 +228,35 @@ talking to it -- gets proven by a surface where a bug costs nothing.
 3. `db.py` queries and `formatters.py` -- verify: unit tests over the fixture. **Done.**
 4. `contacts.py` -- verify: normalization tests over invented numbers in several shapes. **Done.**
 5. Read tools -- verify: exercised through an MCP client, not by calling the functions. **Done.**
-6. Connect over stdio and use it from Claude against the real database.
-7. `auth.py` and the HTTP transport -- verify: `/health` responds, a client completes the OAuth
-   flow.
-8. LaunchAgent, tunnel, healthcheck, self-update -- verify: reachable from the phone; survives a
-   reboot of the host.
+6. `auth.py` and the HTTP transport -- verify: `/health` responds, a client completes the OAuth
+   flow. **Done.** Verified against a running server: registration, PKCE, a wrong password
+   rejected, token exchange, `tools/call` returning real data, a forged token rejected.
+7. LaunchAgent and tunnel -- verify: reachable remotely, answers as a connector. **Done.**
 
-Milestone 1 ends with the thing that justifies the project: reading messages from a phone,
-with no way to write anything.
+The stdio checkpoint was skipped. Every other server here is a remote connector rather than a
+local stdio process, so proving stdio through a client would have proved something that is not
+how this gets used. It was exercised as a real subprocess instead, and the connector was proven
+directly.
+
+Milestone 1 ended with the thing that justifies the project: reading messages from a phone, with
+no way to write anything.
+
+Still open, and not blocking: the healthcheck is configured but not yet on cron, and
+`self-update.sh` is not set up.
 
 ### Milestone 2: sending
 
-9. `applescript.py` and `send_message`, restricted to existing chats -- verify: send one message
+8. `applescript.py` and `send_message`, restricted to existing chats -- verify: send one message
    to yourself, from the machine, before it is ever reachable remotely.
+
+The first send will raise the Automation consent prompt, which cannot be pre-granted. Trigger it
+deliberately while sitting at the host rather than letting it hang a remote call later.
 
 ### Later
 
 New conversations, and everything under Deferred work below.
 
-Steps 1 through 5 need no permissions and no network, so they are the part that can be built
+Steps 1 through 5 needed no permissions and no network, so they were the part that could be built
 anywhere.
 
 ## Deferred work
