@@ -484,15 +484,6 @@ def main() -> None:
     Transport settings are read here rather than at import time so that a
     launcher or a test can set the environment after importing.
     """
-    # FastMCP checks PyPI for a newer version on startup and prints a banner.
-    # Neither is wanted here: this server exists to read a private message
-    # archive, so it should not make an unrequested outbound request every time
-    # it starts, and on an unattended host that call is startup latency and one
-    # more thing to fail when the network is down. setdefault, so an operator
-    # who wants them back can still ask.
-    os.environ.setdefault("FASTMCP_CHECK_FOR_UPDATES", "false")
-    os.environ.setdefault("FASTMCP_SHOW_SERVER_BANNER", "false")
-
     transport = os.environ.get("IMESSAGE_MCP_TRANSPORT", "stdio")
     if transport == "http":
         host = os.environ.get("IMESSAGE_MCP_HOST", "127.0.0.1")
