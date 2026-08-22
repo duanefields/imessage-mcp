@@ -1,0 +1,168 @@
+"""Build a synthetic ``chat.db`` for the tests.
+
+The real database cannot be used: this is a public repository and the tests must
+run anywhere, on a machine that has never seen an iMessage. So the fixture is
+generated from Apple's own schema (``chat_schema.sql``) and filled with invented
+handles in the 555-01xx range reserved for fiction.
+
+Building on the real schema rather than a hand-written subset means a query that
+names a column wrong fails here, rather than passing against a convenient
+approximation and failing on the real database.
+"""
+
+import datetime
+import pathlib
+import sqlite3
+
+from .typedstream_writer import attributed_body
+
+SCHEMA = pathlib.Path(__file__).with_name("chat_schema.sql")
+
+APPLE_EPOCH = datetime.datetime(2001, 1, 1, tzinfo=datetime.timezone.utc)
+
+# A fixed point in time, so every run produces the same database.
+BASE = datetime.datetime(2026, 3, 1, 17, 0, tzinfo=datetime.timezone.utc)
+
+ALICE = "+15125550101"
+BOB = "+15125550102"
+CAROL = "+15125550103"
+DANA_EMAIL = "dana@example.com"
+
+GROUP_NAME = "Game Night"
+
+
+def apple_time(when: datetime.datetime) -> int:
+    """Convert a datetime to Apple's nanoseconds-since-2001 encoding."""
+    return int((when - APPLE_EPOCH).total_seconds() * 1_000_000_000)
+
+
+def _minutes(n: int) -> datetime.datetime:
+    return BASE + datetime.timedelta(minutes=n)
+
+
+def build(path: str | pathlib.Path) -> sqlite3.Connection:
+    """Create a synthetic chat.db at ``path`` and return an open connection."""
+    conn = sqlite3.connect(str(path))
+    conn.executescript(SCHEMA.read_text())
+
+    handles = [
+        (1, ALICE, "iMessage"),
+        (2, BOB, "iMessage"),
+        (3, CAROL, "SMS"),
+        (4, DANA_EMAIL, "iMessage"),
+    ]
+    conn.executemany(
+        "INSERT INTO handle (ROWID, id, service) VALUES (?, ?, ?)", handles
+    )
+
+    chats = [
+        (1, f"iMessage;-;{ALICE}", ALICE, "iMessage", None),
+        (2, f"iMessage;-;{BOB}", BOB, "iMessage", None),
+        (3, "iMessage;+;chat999", "chat999", "iMessage", GROUP_NAME),
+        (4, f"iMessage;-;{DANA_EMAIL}", DANA_EMAIL, "iMessage", None),
+    ]
+    conn.executemany(
+        "INSERT INTO chat (ROWID, guid, chat_identifier, service_name, display_name)"
+        " VALUES (?, ?, ?, ?, ?)",
+        chats,
+    )
+
+    conn.executemany(
+        "INSERT INTO chat_handle_join (chat_id, handle_id) VALUES (?, ?)",
+        [(1, 1), (2, 2), (3, 1), (3, 2), (3, 3), (4, 4)],
+    )
+
+    # (rowid, chat, handle, from_me, minutes, body, use_blob, is_read)
+    #
+    # `use_blob` False writes the text to the `text` column with no
+    # attributedBody, standing in for the old rows that still exist in a long
+    # history. A body of "" is an attachment-only message: the blob is present
+    # and decodes to nothing.
+    messages = [
+        (1, 1, 1, 0, 0, "Are we still on for Saturday?", True, 1),
+        (2, 1, 1, 1, 2, "Yes — 7pm works", True, 1),
+        (3, 1, 1, 0, 5, "Bringing the good dice 🎲", True, 1),
+        (4, 2, 2, 0, 10, "legacy row, text column only", False, 1),
+        (5, 2, 2, 1, 12, "", True, 1),
+        (6, 3, 1, 0, 20, "Who's in for Game Night?", True, 1),
+        (7, 3, 2, 0, 22, "I'm in", True, 1),
+        (8, 3, 0, 1, 25, "Same, see you there", True, 1),
+        (9, 4, 4, 0, 30, "Sent you the itinerary", True, 0),
+        (10, 4, 4, 0, 31, "Let me know what you think", True, 0),
+    ]
+
+    for rowid, chat_id, handle_id, from_me, offset, body, use_blob, is_read in messages:
+        when = apple_time(_minutes(offset))
+        conn.execute(
+            "INSERT INTO message (ROWID, guid, text, attributedBody, handle_id,"
+            " is_from_me, is_read, date, service, is_sent, is_delivered, is_finished)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'iMessage', ?, ?, 1)",
+            (
+                rowid,
+                f"SYNTHETIC-{rowid:04d}",
+                None if use_blob else body,
+                attributed_body(body) if use_blob else None,
+                handle_id,
+                from_me,
+                is_read,
+                when,
+                from_me,
+                from_me,
+            ),
+        )
+        conn.execute(
+            "INSERT INTO chat_message_join (chat_id, message_id, message_date)"
+            " VALUES (?, ?, ?)",
+            (chat_id, rowid, when),
+        )
+
+    # Rows that are not conversation messages but live in the same table, and
+    # so appear in any listing that does not filter them out. The real database
+    # held 3,240 tapbacks and 891 system rows, which would be that many phantom
+    # entries in a transcript.
+    #
+    # A tapback: associated_message_type 2000 is "loved", pointing at message 1.
+    conn.execute(
+        "INSERT INTO message (ROWID, guid, attributedBody, handle_id, is_from_me,"
+        " is_read, date, service, is_finished, associated_message_type,"
+        " associated_message_guid)"
+        " VALUES (11, 'SYNTHETIC-0011', ?, 1, 0, 1, ?, 'iMessage', 1, 2000,"
+        " 'p:0/SYNTHETIC-0001')",
+        (attributed_body("Loved \u201cAre we still on for Saturday?\u201d"), apple_time(_minutes(6))),
+    )
+    conn.execute(
+        "INSERT INTO chat_message_join (chat_id, message_id, message_date)"
+        " VALUES (1, 11, ?)",
+        (apple_time(_minutes(6)),),
+    )
+
+    # A system row: someone named the group. item_type 2 is a group-name change.
+    conn.execute(
+        "INSERT INTO message (ROWID, guid, handle_id, is_from_me, is_read, date,"
+        " service, is_finished, item_type, group_title)"
+        " VALUES (12, 'SYNTHETIC-0012', 1, 0, 1, ?, 'iMessage', 1, 2, ?)",
+        (apple_time(_minutes(19)), GROUP_NAME),
+    )
+    conn.execute(
+        "INSERT INTO chat_message_join (chat_id, message_id, message_date)"
+        " VALUES (3, 12, ?)",
+        (apple_time(_minutes(19)),),
+    )
+
+    # One attachment, hung off the attachment-only message (rowid 5).
+    conn.execute(
+        "INSERT INTO attachment (ROWID, guid, original_guid, filename, mime_type,"
+        " uti, total_bytes, is_outgoing, transfer_name)"
+        " VALUES (1, 'ATT-0001', 'ATT-0001', '~/Library/Messages/Attachments/ab/IMG_0001.HEIC',"
+        " 'image/heic', 'public.heic', 2097152, 1, 'IMG_0001.HEIC')"
+    )
+    conn.execute(
+        "INSERT INTO message_attachment_join (message_id, attachment_id) VALUES (5, 1)"
+    )
+    # Apple keeps this column current with a trigger on message_attachment_join.
+    # The schema here has no triggers -- they call functions only Messages.app
+    # registers -- so anything a trigger would maintain has to be set by hand.
+    conn.execute("UPDATE message SET cache_has_attachments = 1 WHERE ROWID = 5")
+
+    conn.commit()
+    return conn

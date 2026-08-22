@@ -1,0 +1,101 @@
+from imessage_mcp import db, formatters
+
+from .support.synthetic_db import ALICE, DANA_EMAIL, GROUP_NAME
+
+ALICE_CHAT = f"iMessage;-;{ALICE}"
+GROUP_CHAT = "iMessage;+;chat999"
+
+
+def test_format_size():
+    assert formatters.format_size(None) == "unknown size"
+    assert formatters.format_size(0) == "unknown size"
+    assert formatters.format_size(512) == "512 B"
+    assert formatters.format_size(2048) == "2.0 KB"
+    assert formatters.format_size(2097152) == "2.0 MB"
+    assert formatters.format_size(5 * 1024**3) == "5.0 GB"
+
+
+def test_chat_title_prefers_the_group_name(resolver):
+    chat = {"display_name": GROUP_NAME, "chat_identifier": "chat999"}
+    assert formatters.chat_title(chat, resolver) == GROUP_NAME
+
+
+def test_chat_title_resolves_a_one_to_one_chat(resolver):
+    chat = {"display_name": None, "chat_identifier": ALICE}
+    assert formatters.chat_title(chat, resolver) == "Alice Example"
+
+
+def test_chat_title_falls_back_to_the_handle():
+    chat = {"display_name": None, "chat_identifier": ALICE}
+    assert formatters.chat_title(chat, None) == ALICE
+
+
+def test_format_message_names_the_sender(resolver):
+    message = {
+        "is_from_me": False,
+        "handle": ALICE,
+        "date": "2026-03-01T17:00:00+00:00",
+        "text": "Are we still on for Saturday?",
+    }
+    rendered = formatters.format_message(message, resolver)
+    assert rendered == (
+        "[2026-03-01T17:00:00+00:00] Alice Example: Are we still on for Saturday?"
+    )
+
+
+def test_format_message_labels_my_own_messages(resolver):
+    message = {"is_from_me": True, "handle": None, "date": "t", "text": "hi"}
+    assert formatters.format_message(message, resolver) == "[t] me: hi"
+
+
+def test_message_with_no_text_says_so_rather_than_rendering_empty():
+    attachment = {"is_from_me": True, "date": "t", "text": None, "has_attachments": True}
+    plain = {"is_from_me": True, "date": "t", "text": None, "has_attachments": False}
+    assert formatters.format_message(attachment) == "[t] me: [attachment]"
+    assert formatters.format_message(plain) == "[t] me: [no text]"
+
+
+def test_empty_collections_read_as_sentences():
+    assert formatters.format_chats([]) == "No conversations found."
+    assert formatters.format_messages([]) == "No messages found."
+    assert formatters.format_participants([]) == "No participants found."
+    assert formatters.format_attachments([]) == "No attachments found."
+
+
+def test_format_chat_shows_unread_and_guid(conn, resolver):
+    chats = {c["chat_guid"]: c for c in db.list_chats(conn)}
+    rendered = formatters.format_chat(chats[f"iMessage;-;{DANA_EMAIL}"], resolver)
+    assert "Dana Example" in rendered
+    assert "(2 unread)" in rendered
+    assert "Let me know what you think" in rendered
+    assert f"guid: iMessage;-;{DANA_EMAIL}" in rendered
+
+
+def test_format_chat_omits_unread_when_there_is_none(conn, resolver):
+    chats = {c["chat_guid"]: c for c in db.list_chats(conn)}
+    assert "unread" not in formatters.format_chat(chats[ALICE_CHAT], resolver)
+
+
+def test_format_messages_renders_a_transcript(conn, resolver):
+    rendered = formatters.format_messages(db.get_messages(conn, ALICE_CHAT), resolver)
+    lines = rendered.splitlines()
+    assert len(lines) == 3
+    assert "Alice Example: Bringing the good dice 🎲" in lines[0]
+    assert "me: Yes — 7pm works" in lines[1]
+
+
+def test_format_participants_keeps_the_handle_alongside_the_name(conn, resolver):
+    rendered = formatters.format_participants(
+        db.get_participants(conn, GROUP_CHAT), resolver
+    )
+    assert f"Alice Example ({ALICE}, iMessage)" in rendered
+    # Carol is not in the address book, so she is shown by handle, once.
+    assert "+15125550103 (+15125550103, SMS)" in rendered
+
+
+def test_format_attachment(conn):
+    rendered = formatters.format_attachments(db.get_attachments(conn))
+    assert "IMG_0001.HEIC" in rendered
+    assert "image/heic" in rendered
+    assert "2.0 MB" in rendered
+    assert "sent" in rendered
