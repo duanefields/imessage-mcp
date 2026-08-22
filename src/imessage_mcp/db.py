@@ -327,12 +327,28 @@ def get_participants(conn: sqlite3.Connection, chat_guid: str) -> list[dict]:
     return [{"handle": row["handle"], "service": row["service"]} for row in rows]
 
 
-def get_unread(conn: sqlite3.Connection, limit: int = 50) -> list[dict]:
-    """Received messages that have not been read, newest first.
+# Apple's own conditions, copied from the index it keeps for exactly this
+# query -- unread means received, finished, and not a system row.
+UNREAD_ONLY = (
+    f"m.is_read = 0 AND m.is_from_me = 0 AND m.is_finished = 1 AND {CONVERSATION_ONLY}"
+)
 
-    The conditions are Apple's own, copied from the index it keeps for exactly
-    this query -- unread means received, finished, and not a system row.
-    """
+
+def count_unread(conn: sqlite3.Connection) -> int:
+    """Every unread message, not just the ones a limit would return."""
+    row = conn.execute(
+        f"""
+        SELECT COUNT(*) AS n
+          FROM message m
+          JOIN chat_message_join j ON j.message_id = m.ROWID
+         WHERE {UNREAD_ONLY}
+        """
+    ).fetchone()
+    return row["n"]
+
+
+def get_unread(conn: sqlite3.Connection, limit: int = 50) -> list[dict]:
+    """Received messages that have not been read, newest first."""
     rows = conn.execute(
         f"""
         SELECT {_MESSAGE_COLUMNS}, c.guid AS chat_guid, c.display_name
@@ -340,8 +356,7 @@ def get_unread(conn: sqlite3.Connection, limit: int = 50) -> list[dict]:
           JOIN chat_message_join j ON j.message_id = m.ROWID
           JOIN chat c ON c.ROWID = j.chat_id
           LEFT JOIN handle h ON h.ROWID = m.handle_id
-         WHERE m.is_read = 0 AND m.is_from_me = 0 AND m.is_finished = 1
-           AND {CONVERSATION_ONLY}
+         WHERE {UNREAD_ONLY}
          ORDER BY m.date DESC
          LIMIT ?
         """,

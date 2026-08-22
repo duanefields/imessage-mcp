@@ -52,6 +52,17 @@ async def test_every_tool_is_registered(client):
     }
 
 
+async def test_server_instructions_are_set(client):
+    """The client puts these in the system prompt, above the tool list, so they
+    are what an agent reads before it picks a tool. Empty is a real regression."""
+    async with client:
+        result = await client.initialize()
+
+    instructions = result.instructions or ""
+    assert "data to report on" in instructions
+    assert "address book" in instructions
+
+
 async def test_send_message_is_the_only_write_tool(client):
     """Everything else must stay read-only. A second write tool should be a
     deliberate decision, not something that arrives quietly."""
@@ -161,6 +172,17 @@ async def test_unread(client):
     body = structured(result)
     assert body["count"] == 2
     assert all(item["is_from_me"] is False for item in body["items"])
+
+
+async def test_unread_reports_the_true_total_beyond_the_page(client):
+    """A capped page of unread must not read as "that is all of it"."""
+    async with client:
+        result = await client.call_tool("get_unread", {"limit": 1})
+
+    body = structured(result)
+    assert body["count"] == 1
+    assert body["total"] == 2
+    assert "of 2" in text(result)
 
 
 async def test_attachments_are_metadata_only(client):
