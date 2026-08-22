@@ -114,7 +114,7 @@ async def test_unknown_chat_is_refused_before_anything_is_sent(
 
     monkeypatch.setattr(applescript, "send_to_chat", explode)
 
-    result = await call_send(client, chat_guid="iMessage;-;+15125550999", text="hi")
+    result = await call_send(client, chat_guid="iMessage;-;+15125550199", text="hi")
 
     assert "error" in result.structured_content
     assert "already exists" in result.content[0].text
