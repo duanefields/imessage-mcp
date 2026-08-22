@@ -6,6 +6,20 @@ import pytest
 from .support import synthetic_db
 
 
+@pytest.fixture(autouse=True)
+def forget_what_was_read():
+    """Start every test with an empty read log.
+
+    The log lives in the module, so without this a read in one test could
+    refuse a send in the next.
+    """
+    from imessage_mcp import provenance
+
+    provenance.reset()
+    yield
+    provenance.reset()
+
+
 @pytest.fixture(scope="session")
 def chat_db_path(tmp_path_factory) -> pathlib.Path:
     """A synthetic chat.db, built once for the session."""

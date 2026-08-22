@@ -87,6 +87,10 @@ what is deliberately deferred.
 - `src/imessage_mcp/attributed.py` -- recovers message text from the
   `attributedBody` typedstream blob. The `text` column is empty on ~99% of real
   messages, so this is the primary path, not a fallback.
+- `src/imessage_mcp/provenance.py` -- remembers which conversation the model
+  was shown text from, so `send_message` can refuse to forward it somewhere
+  else. Message text is untrusted input; see "The archive is untrusted input"
+  in `docs/scope.md` for what this catches and what it does not.
 - `tests/support/typedstream_writer.py` -- writes blobs of the shape Messages
   produces, so fixtures exercise the real decode path. `pytypedstream` only
   reads.
