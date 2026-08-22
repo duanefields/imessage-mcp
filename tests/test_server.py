@@ -177,3 +177,105 @@ async def test_structured_content_is_json_serializable(client):
     async with client:
         result = await client.call_tool("list_chats", {})
     json.dumps(structured(result))
+
+
+async def test_health_reports_liveness_and_the_interpreter(monkeypatch, chat_db_path):
+    """The interpreter path is on the health check for a reason.
+
+    Full Disk Access is granted against the resolved interpreter path, and a
+    patch upgrade moves it and silently voids the grant. The service then hangs
+    on its next restart with an empty log. This field is the early warning.
+    """
+    import httpx
+
+    monkeypatch.setenv("IMESSAGE_MCP_DB_PATH", str(chat_db_path))
+    app = server.mcp.http_app()
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        async with app.router.lifespan_context(app):
+            response = await client.get("/health")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["database"] == "ok"
+    assert body["newest_message"].startswith("2026-03-01")
+    assert body["python"].endswith(("python", "python3", "python3.12", "python3.13"))
+
+
+async def test_health_reports_degraded_when_the_database_is_gone(monkeypatch, tmp_path):
+    import httpx
+
+    monkeypatch.setenv("IMESSAGE_MCP_DB_PATH", str(tmp_path / "absent.db"))
+    app = server.mcp.http_app()
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        async with app.router.lifespan_context(app):
+            response = await client.get("/health")
+
+    assert response.status_code == 503
+    assert response.json()["status"] == "degraded"
+
+
+def test_unknown_transport_is_refused(monkeypatch):
+    import pytest
+
+    monkeypatch.setenv("IMESSAGE_MCP_TRANSPORT", "carrier-pigeon")
+    with pytest.raises(SystemExit, match="carrier-pigeon"):
+        server.main()
+
+
+async def test_health_reports_messages_app_but_stays_healthy_without_it(
+    monkeypatch, chat_db_path
+):
+    """A host where Messages has quit serves every read correctly and drops
+    every send. The server is not unhealthy; the deployment is. So the field is
+    reported and the monitor decides, rather than /health returning 503 for
+    something that does not affect reads at all."""
+    import httpx
+
+    monkeypatch.setenv("IMESSAGE_MCP_DB_PATH", str(chat_db_path))
+    monkeypatch.setattr(server, "messages_is_running", lambda: False)
+    app = server.mcp.http_app()
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        async with app.router.lifespan_context(app):
+            response = await client.get("/health")
+
+    assert response.status_code == 200
+    assert response.json()["status"] == "ok"
+    assert response.json()["messages_running"] is False
+
+
+def test_messages_check_does_not_use_apple_events(monkeypatch):
+    """AppleScript would need Automation permission, and that prompt cannot be
+    answered on an unattended host -- a liveness check written that way would
+    hang the thing it is checking."""
+    import subprocess
+
+    seen = {}
+
+    def fake_run(args, **kwargs):
+        seen["args"] = args
+        return subprocess.CompletedProcess(args, 0)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    assert server.messages_is_running() is True
+    assert "osascript" not in " ".join(seen["args"])
+    assert seen["args"][0].endswith("pgrep")
+
+
+def test_messages_check_survives_a_missing_pgrep(monkeypatch):
+    import subprocess
+
+    def boom(*args, **kwargs):
+        raise OSError("no such binary")
+
+    monkeypatch.setattr(subprocess, "run", boom)
+    assert server.messages_is_running() is False

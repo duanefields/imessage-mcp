@@ -8,12 +8,17 @@ of building the read surface.
 import json
 import logging
 import os
+import platform
+import subprocess
+import sys
 import time
 
 from fastmcp import FastMCP
 from fastmcp.tools.tool import ToolResult
+from starlette.responses import JSONResponse
 
 from . import db
+from .auth import build_auth
 from .contacts import ContactResolver
 from .formatters import (
     format_attachments,
@@ -263,14 +268,72 @@ async def get_attachments(
     return _result(attachments, format_attachments(attachments), total, offset, limit)
 
 
+def messages_is_running() -> bool:
+    """Whether Messages.app is up.
+
+    Reads work without it -- the database is on disk either way -- but sending
+    goes through Messages, so a host where it has quietly quit can serve every
+    read correctly and drop every send.
+
+    Checked with pgrep rather than by asking Messages over AppleScript. Asking
+    would need Apple Events permission, and that prompt cannot be pre-granted or
+    answered on an unattended host, so a liveness check written that way would
+    itself hang the thing it is meant to be checking.
+    """
+    try:
+        result = subprocess.run(
+            ["/usr/bin/pgrep", "-x", "Messages"],
+            capture_output=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return result.returncode == 0
+
+
+@mcp.custom_route("/health", methods=["GET"])
+async def health(request):
+    """Liveness, plus the two things that actually break this deployment.
+
+    `python` is reported because Full Disk Access is granted against the
+    interpreter's resolved path, and a patch upgrade silently moves it and
+    voids the grant. The service then hangs on its next restart with nothing in
+    the log. Watching this field is the early warning.
+
+    `newest_message` distinguishes a working server from one that is serving a
+    database Messages has stopped writing to, and `messages_running` catches
+    the case where Messages has quit: reads keep working, sends would not.
+    """
+    payload = {
+        "status": "ok",
+        "python": os.path.realpath(sys.executable),
+        "python_version": platform.python_version(),
+        # Reported, but does not make the server unhealthy: reads work whether
+        # or not Messages is up. It is the monitor's job to decide that a host
+        # which cannot send is a problem worth waking someone for.
+        "messages_running": messages_is_running(),
+    }
+    try:
+        conn = db.connect()
+        try:
+            row = conn.execute("SELECT MAX(date) AS newest FROM message").fetchone()
+            payload["newest_message"] = db.to_iso(row["newest"])
+            payload["database"] = "ok"
+        finally:
+            conn.close()
+    except Exception as exc:
+        payload["status"] = "degraded"
+        payload["database"] = f"unreachable: {exc.__class__.__name__}"
+        return JSONResponse(payload, status_code=503)
+
+    return JSONResponse(payload)
+
+
 def main() -> None:
     """Run the server.
 
     Transport settings are read here rather than at import time so that a
-    launcher or a test can set the environment after importing. Only stdio is
-    wired up so far; the HTTP transport arrives with its authentication layer,
-    since an unauthenticated HTTP server over a message archive is not something
-    to leave lying around half-built.
+    launcher or a test can set the environment after importing.
     """
     # FastMCP checks PyPI for a newer version on startup and prints a banner.
     # Neither is wanted here: this server exists to read a private message
@@ -282,11 +345,27 @@ def main() -> None:
     os.environ.setdefault("FASTMCP_SHOW_SERVER_BANNER", "false")
 
     transport = os.environ.get("IMESSAGE_MCP_TRANSPORT", "stdio")
-    if transport != "stdio":
-        raise SystemExit(
-            f"Unsupported transport '{transport}'. Only stdio is implemented so far."
+    if transport == "http":
+        host = os.environ.get("IMESSAGE_MCP_HOST", "127.0.0.1")
+        port = int(os.environ.get("IMESSAGE_MCP_PORT", "8000"))
+        # Authentication guards the HTTP transport only. stdio takes its
+        # security from the fact that running it means already having a shell.
+        mcp.auth = build_auth()
+        # Stateless by default: a fresh transport per request. A remote client
+        # dials from a pool of addresses, and a request arriving from a
+        # different address than the one that opened the session is rejected
+        # with a 400 that wedges the connection. Nothing here needs session
+        # state -- no subscriptions, no server-initiated messages.
+        stateless = (
+            os.environ.get("IMESSAGE_MCP_STATELESS", "true").strip().lower() != "false"
         )
-    mcp.run()
+        mcp.run(transport="http", host=host, port=port, stateless_http=stateless)
+    elif transport == "stdio":
+        mcp.run()
+    else:
+        raise SystemExit(
+            f"Unknown IMESSAGE_MCP_TRANSPORT {transport!r}. Supported: stdio, http."
+        )
 
 
 if __name__ == "__main__":
