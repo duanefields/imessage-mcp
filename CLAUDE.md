@@ -83,6 +83,7 @@ The suite is offline and touches no real data.
 See `docs/scope.md` for the full design, what was measured to justify it, and
 what is deliberately deferred.
 
+- `src/imessage_mcp/server.py` -- the tools. Read-only; sending is a later milestone.
 - `src/imessage_mcp/attributed.py` -- recovers message text from the
   `attributedBody` typedstream blob. The `text` column is empty on ~99% of real
   messages, so this is the primary path, not a fallback.

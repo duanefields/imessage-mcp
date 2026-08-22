@@ -215,24 +215,39 @@ documented way this service dies.
 
 ## Build order
 
-Each step has something to check, so it can run without supervision.
+Sending is held back until the read surface has been proven end to end through a real client.
+That ordering is deliberate: it means the first version exposed to the network cannot do
+anything irreversible, and the whole pipeline -- permissions, tunnel, auth, a client actually
+talking to it -- gets proven by a surface where a bug costs nothing.
 
-1. Fixture generator and a synthetic chat.db → verify: tests can open it and count rows.
-2. `attributed.py` → verify: decodes synthetic blobs; a spot check against the real database run
-   by hand, never committed.
-3. `db.py` queries and `formatters.py` → verify: unit tests over the fixture.
-4. `contacts.py` → verify: normalization tests over invented numbers in several formats.
-5. Read tools on stdio → verify: exercised against the real database from the desktop client.
-6. `applescript.py` and `send_message` → verify: send one message to yourself.
-7. `auth.py` and the HTTP transport → verify: `/health` responds, a client completes the OAuth
+### Milestone 1: read-only, working through Claude
+
+1. Fixture generator and a synthetic chat.db -- verify: tests open it and count rows. **Done.**
+2. `attributed.py` -- verify: decodes synthetic blobs; spot-checked by hand against the real
+   database, never committed. **Done.**
+3. `db.py` queries and `formatters.py` -- verify: unit tests over the fixture. **Done.**
+4. `contacts.py` -- verify: normalization tests over invented numbers in several shapes. **Done.**
+5. Read tools -- verify: exercised through an MCP client, not by calling the functions. **Done.**
+6. Connect over stdio and use it from Claude against the real database.
+7. `auth.py` and the HTTP transport -- verify: `/health` responds, a client completes the OAuth
    flow.
-8. LaunchAgent, tunnel, healthcheck, self-update → verify: reachable from the phone; survives a
+8. LaunchAgent, tunnel, healthcheck, self-update -- verify: reachable from the phone; survives a
    reboot of the host.
 
-Steps 1 through 4 need no permissions and no network, so they are the part that can be built
-anywhere.
+Milestone 1 ends with the thing that justifies the project: reading messages from a phone,
+with no way to write anything.
 
----
+### Milestone 2: sending
+
+9. `applescript.py` and `send_message`, restricted to existing chats -- verify: send one message
+   to yourself, from the machine, before it is ever reachable remotely.
+
+### Later
+
+New conversations, and everything under Deferred work below.
+
+Steps 1 through 5 need no permissions and no network, so they are the part that can be built
+anywhere.
 
 ## Deferred work
 

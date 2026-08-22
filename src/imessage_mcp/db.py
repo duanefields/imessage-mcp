@@ -37,7 +37,12 @@ def connect(path: str | os.PathLike | None = None) -> sqlite3.Connection:
     no need to copy it first. It was verified returning rows written seconds
     earlier.
     """
-    target = pathlib.Path(path) if path is not None else DEFAULT_DB_PATH
+    if path is not None:
+        target = pathlib.Path(path)
+    else:
+        # Read at call time, not import time, so a launcher or a test can set it
+        # after the module is loaded.
+        target = pathlib.Path(os.environ.get("IMESSAGE_MCP_DB_PATH") or DEFAULT_DB_PATH)
     conn = sqlite3.connect(f"file:{target}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     return conn
@@ -124,6 +129,48 @@ def _previews(conn: sqlite3.Connection, message_ids: list[int | None]) -> dict[i
     return {
         row["ROWID"]: message_text(row["text"], row["attributedBody"]) for row in rows
     }
+
+
+def chat_exists(conn: sqlite3.Connection, chat_guid: str) -> bool:
+    """Whether a chat with this guid exists.
+
+    Lets a tool tell "no such conversation" apart from "that conversation is
+    empty", which are the same empty list otherwise.
+    """
+    row = conn.execute(
+        "SELECT 1 FROM chat WHERE guid = ? LIMIT 1", (chat_guid,)
+    ).fetchone()
+    return row is not None
+
+
+def count_chats(conn: sqlite3.Connection) -> int:
+    """Chats that have at least one message, matching what list_chats returns."""
+    row = conn.execute(
+        """
+        SELECT COUNT(DISTINCT c.ROWID) AS n
+          FROM chat c
+          JOIN chat_message_join j ON j.chat_id = c.ROWID
+        """
+    ).fetchone()
+    return row["n"]
+
+
+def count_attachments(conn: sqlite3.Connection, chat_guid: str | None = None) -> int:
+    where = "WHERE c.guid = ?" if chat_guid else ""
+    params = [chat_guid] if chat_guid else []
+    row = conn.execute(
+        f"""
+        SELECT COUNT(*) AS n
+          FROM attachment a
+          JOIN message_attachment_join maj ON maj.attachment_id = a.ROWID
+          JOIN message m ON m.ROWID = maj.message_id
+          JOIN chat_message_join j ON j.message_id = m.ROWID
+          JOIN chat c ON c.ROWID = j.chat_id
+         {where}
+        """,
+        params,
+    ).fetchone()
+    return row["n"]
 
 
 def count_messages(conn: sqlite3.Connection, chat_guid: str) -> int:
