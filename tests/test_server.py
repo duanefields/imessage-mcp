@@ -48,15 +48,16 @@ async def test_every_tool_is_registered(client):
         "get_participants",
         "get_unread",
         "get_attachments",
+        "send_message",
     }
 
 
-async def test_no_write_tool_is_exposed(client):
-    """Milestone one is read-only. Sending is not wired up yet, and this fails
-    loudly if a send tool is added without a deliberate decision."""
+async def test_send_message_is_the_only_write_tool(client):
+    """Everything else must stay read-only. A second write tool should be a
+    deliberate decision, not something that arrives quietly."""
     async with client:
         names = {tool.name for tool in await client.list_tools()}
-    assert not any("send" in name for name in names)
+    assert {name for name in names if "send" in name} == {"send_message"}
 
 
 async def test_list_chats_returns_text_and_structure(client):

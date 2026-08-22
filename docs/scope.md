@@ -244,13 +244,26 @@ no way to write anything.
 Still open, and not blocking: the healthcheck is configured but not yet on cron, and
 `self-update.sh` is not set up.
 
-### Milestone 2: sending
+### Milestone 2: sending -- **built, one step unverified**
 
-8. `applescript.py` and `send_message`, restricted to existing chats -- verify: send one message
-   to yourself, from the machine, before it is ever reachable remotely.
+8. `applescript.py` and `send_message`, restricted to existing chats. **Built.** What is verified
+   without sending anything: the AppleScript compiles, reaches Messages, and resolves a database
+   `chat.guid` through `chat id`; a nonexistent chat fails with `-1728` and the error reaches the
+   caller. What is not verified is the `send` verb itself.
+9. Send one message to yourself, at the host, before this is reachable remotely.
 
-The first send will raise the Automation consent prompt, which cannot be pre-granted. Trigger it
-deliberately while sitting at the host rather than letting it hang a remote call later.
+Text and chat id are passed to `osascript` as **arguments**, never interpolated into the script.
+Escaping quotes and backslashes by hand is the usual approach and the usual bug; as argv there is
+nothing to escape, and a message containing `"` or `$(...)` is just data.
+
+The first send raises the Automation consent prompt, which **cannot be pre-granted** -- System
+Settings only lists pairs macOS has already recorded. Two things follow:
+
+- It must be triggered by the process that will really do it. macOS records the grant against the
+  *responsible* process, so answering a prompt raised from an SSH shell grants a different pair
+  than the LaunchAgent needs. Trigger it from the service and answer it on the host's own screen.
+- Until it is answered the call blocks. `send_to_chat` therefore has a 30 second timeout whose
+  error names the consent dialog, rather than hanging a remote tool call forever.
 
 ### Later
 

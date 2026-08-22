@@ -1,8 +1,8 @@
 """MCP tools over the iMessage database.
 
-Read-only for now. Sending is a later step, and is deliberately not wired up
-here yet -- a send cannot be recalled, so it does not get added as a side effect
-of building the read surface.
+Six read tools and one write tool. The write tool can only reach a conversation
+that already exists, which is the property that keeps a wrong number from
+reaching a stranger.
 """
 
 import json
@@ -13,11 +13,12 @@ import subprocess
 import sys
 import time
 
+import anyio
 from fastmcp import FastMCP
 from fastmcp.tools.tool import ToolResult
 from starlette.responses import JSONResponse
 
-from . import db
+from . import applescript, db
 from .auth import build_auth
 from .contacts import ContactResolver
 from .formatters import (
@@ -327,6 +328,102 @@ async def health(request):
         return JSONResponse(payload, status_code=503)
 
     return JSONResponse(payload)
+
+
+# How long to wait for a sent message to appear in the database before giving
+# up on confirming it. Generous: Messages writes the row quickly, but a sync or
+# a busy moment can add a beat.
+_CONFIRM_TIMEOUT_SECONDS = 5.0
+_CONFIRM_POLL_SECONDS = 0.25
+
+
+async def _confirm_sent(chat_guid: str, text: str, since_ns: int) -> dict | None:
+    """Wait briefly for the sent message to show up in the database.
+
+    A fresh connection per poll, because each one should see the newest WAL
+    contents rather than a snapshot taken before the send.
+    """
+    deadline = _CONFIRM_TIMEOUT_SECONDS
+    waited = 0.0
+    while waited < deadline:
+        await anyio.sleep(_CONFIRM_POLL_SECONDS)
+        waited += _CONFIRM_POLL_SECONDS
+        conn = db.connect()
+        try:
+            found = db.find_outgoing(conn, chat_guid, text, since_ns)
+        finally:
+            conn.close()
+        if found:
+            return found
+    return None
+
+
+@mcp.tool
+async def send_message(chat_guid: str, text: str) -> ToolResult:
+    """Send a message to an existing conversation.
+
+    Only conversations that already exist can be addressed, by the chat_guid
+    from list_chats. There is no way to start a new conversation, so this cannot
+    reach somebody who has not been talked to before.
+
+    A sent message cannot be recalled.
+
+    Args:
+        chat_guid: The conversation's guid, from list_chats
+        text: The message to send
+    """
+    if not text or not text.strip():
+        return _error_result("Error: refusing to send an empty message")
+
+    conn = db.connect()
+    try:
+        if not db.chat_exists(conn, chat_guid):
+            return _error_result(
+                f"Error: no conversation with guid '{chat_guid}'. Messages can only "
+                "be sent to a conversation that already exists; use list_chats to "
+                "find it."
+            )
+    finally:
+        conn.close()
+
+    if not messages_is_running():
+        return _error_result(
+            "Error: Messages is not running, so the message cannot be sent. Start "
+            "Messages on the host and retry."
+        )
+
+    since_ns = db.now_apple_ns()
+    try:
+        await anyio.to_thread.run_sync(applescript.send_to_chat, chat_guid, text)
+    except applescript.SendError as exc:
+        return _error_result(f"Error: {exc}")
+
+    confirmed = await _confirm_sent(chat_guid, text, since_ns)
+
+    if confirmed:
+        summary = f"Sent, and confirmed in the conversation at {confirmed['date']}."
+    else:
+        # Deliberately not an error. AppleScript accepted it, so it probably
+        # went; what is unproven is that it landed. Saying so is more useful
+        # than either claiming success or claiming failure.
+        summary = (
+            "Sent. Messages accepted it, but it has not appeared in the "
+            f"conversation within {_CONFIRM_TIMEOUT_SECONDS:.0f}s, so delivery is "
+            "unconfirmed. Check the conversation before sending it again -- "
+            "retrying may deliver it twice."
+        )
+
+    return ToolResult(
+        content=summary,
+        structured_content={
+            "sent": True,
+            "confirmed": confirmed is not None,
+            "chat_guid": chat_guid,
+            "text": text,
+            "message_guid": confirmed["guid"] if confirmed else None,
+            "date": confirmed["date"] if confirmed else None,
+        },
+    )
 
 
 def main() -> None:

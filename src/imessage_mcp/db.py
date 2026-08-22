@@ -61,6 +61,42 @@ def to_iso(apple_ns: int | None) -> str | None:
     return (APPLE_EPOCH + datetime.timedelta(seconds=seconds)).isoformat()
 
 
+def now_apple_ns() -> int:
+    """The current time in Apple's nanoseconds-since-2001 encoding."""
+    now = datetime.datetime.now(datetime.timezone.utc)
+    return int((now - APPLE_EPOCH).total_seconds() * 1_000_000_000)
+
+
+def find_outgoing(
+    conn: sqlite3.Connection, chat_guid: str, text: str, since_ns: int
+) -> dict | None:
+    """Find a message we sent to ``chat_guid`` since ``since_ns`` matching ``text``.
+
+    Used to confirm a send actually happened. AppleScript's ``send`` is
+    fire-and-forget: it reports success for handing the message to Messages, not
+    for Messages doing anything with it. Reading the message back out of the
+    database is the difference between "we asked" and "it exists".
+    """
+    rows = conn.execute(
+        f"""
+        SELECT {_MESSAGE_COLUMNS}
+          FROM message m
+          JOIN chat_message_join j ON j.message_id = m.ROWID
+          JOIN chat c ON c.ROWID = j.chat_id
+          LEFT JOIN handle h ON h.ROWID = m.handle_id
+         WHERE c.guid = ? AND m.is_from_me = 1 AND m.date >= ?
+           AND {CONVERSATION_ONLY}
+         ORDER BY m.date DESC
+         LIMIT 20
+        """,
+        (chat_guid, since_ns),
+    ).fetchall()
+    for row in rows:
+        if message_text(row["text"], row["attributedBody"]) == text:
+            return _message_row(row)
+    return None
+
+
 def _message_row(row: sqlite3.Row) -> dict:
     return {
         "guid": row["guid"],
