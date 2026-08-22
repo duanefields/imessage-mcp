@@ -20,7 +20,7 @@ from starlette.responses import JSONResponse
 
 from . import applescript, db
 from .auth import build_auth
-from .contacts import ContactResolver
+from .contacts import ContactResolver, normalize_handle
 from .formatters import (
     format_attachments,
     format_chats,
@@ -92,15 +92,58 @@ def _result(
     return ToolResult(content=text, structured_content=structured)
 
 
+def _matching_guids(identities: list[dict], contact: str, resolver) -> list[str]:
+    """Chat guids whose name, group name, or any participant matches ``contact``.
+
+    Matches a resolved contact name as well as the raw handle, so both "Travis"
+    and a phone number find the same conversation. Handles are compared on their
+    normalized form, so the shape they were typed in does not matter.
+    """
+    needle = contact.casefold().strip()
+    normalized_needle = normalize_handle(contact)
+    matched = []
+
+    for identity in identities:
+        candidates = [identity.get("display_name"), identity.get("chat_identifier")]
+        candidates.extend(identity.get("handles") or [])
+        candidates.extend(
+            resolver.name_for(handle)
+            for handle in ([identity.get("chat_identifier")] + (identity.get("handles") or []))
+            if handle
+        )
+
+        for candidate in candidates:
+            if not candidate:
+                continue
+            if needle in candidate.casefold():
+                matched.append(identity["chat_guid"])
+                break
+            # A number typed any which way should still find the conversation.
+            if normalized_needle and normalize_handle(candidate) == normalized_needle:
+                matched.append(identity["chat_guid"])
+                break
+
+    return matched
+
+
 @mcp.tool
-async def list_chats(limit: int = 20, offset: int = 0) -> ToolResult:
+async def list_chats(
+    contact: str | None = None, limit: int = 20, offset: int = 0
+) -> ToolResult:
     """List conversations, most recently active first.
 
     Each entry carries the chat_guid needed by the other tools, the other
     participant's name where it is known, how many unread messages it holds, and
     a preview of the last message.
 
+    Without `contact` this returns only recent conversations, so somebody who has
+    not been messaged lately will not appear. Pass `contact` to search every
+    conversation by name, group name, or phone number instead -- that is the way
+    to find a chat_guid for an older conversation.
+
     Args:
+        contact: Find conversations with this person, by name or number
+            (default: all conversations, most recent first)
         limit: Maximum number of conversations to return (default: 20)
         offset: Number of conversations to skip from the start (default: 0)
     """
@@ -108,15 +151,24 @@ async def list_chats(limit: int = 20, offset: int = 0) -> ToolResult:
     if error:
         return _error_result(error)
 
+    resolver = _resolver_for_now()
     conn = db.connect()
     try:
-        chats = db.list_chats(conn, limit=limit, offset=offset)
-        total = db.count_chats(conn)
+        guids = None
+        if contact is not None:
+            if not contact.strip():
+                return _error_result("Error: contact must not be empty")
+            guids = _matching_guids(db.chat_identities(conn), contact, resolver)
+
+        chats = db.list_chats(conn, limit=limit, offset=offset, guids=guids)
+        total = db.count_chats(conn, guids=guids)
     finally:
         conn.close()
 
-    resolver = _resolver_for_now()
-    return _result(chats, format_chats(chats, resolver), total, offset, limit)
+    text = format_chats(chats, resolver)
+    if contact is not None and not chats:
+        text = f"No conversations found with '{contact}'."
+    return _result(chats, text, total, offset, limit)
 
 
 @mcp.tool

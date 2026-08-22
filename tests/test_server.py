@@ -280,3 +280,78 @@ def test_messages_check_survives_a_missing_pgrep(monkeypatch):
 
     monkeypatch.setattr(subprocess, "run", boom)
     assert server.messages_is_running() is False
+
+
+async def test_contact_filter_finds_a_chat_by_resolved_name(client):
+    """Finds her direct conversation and the group she is in.
+
+    Both are conversations with Alice, and hiding the group would mean the
+    filter cannot find a group chat by who is in it.
+    """
+    async with client:
+        result = await client.call_tool("list_chats", {"contact": "Alice"})
+
+    guids = {c["chat_guid"] for c in structured(result)["items"]}
+    assert guids == {ALICE_CHAT, GROUP_CHAT}
+
+
+async def test_contact_filter_finds_a_chat_by_phone_number_in_any_shape(client):
+    """The number is stored one way and typed another. Both must find it, or
+    the filter only works when you already know the exact format."""
+    for typed in ("+15125550101", "5125550101", "(512) 555-0101", "512-555-0101"):
+        async with client:
+            result = await client.call_tool("list_chats", {"contact": typed})
+        guids = {c["chat_guid"] for c in structured(result)["items"]}
+        assert ALICE_CHAT in guids, typed
+
+
+async def test_contact_filter_finds_a_group_by_name(client):
+    async with client:
+        result = await client.call_tool("list_chats", {"contact": "Game Night"})
+    assert structured(result)["items"][0]["chat_guid"] == GROUP_CHAT
+
+
+async def test_contact_filter_finds_a_group_by_a_member(client):
+    """Carol is only ever in the group, and only by handle -- she is not in the
+    address book. Finding the group by her number proves matching reaches the
+    participant list, not just the chat's own name."""
+    async with client:
+        result = await client.call_tool("list_chats", {"contact": "+15125550103"})
+
+    guids = {c["chat_guid"] for c in structured(result)["items"]}
+    assert guids == {GROUP_CHAT}
+
+
+async def test_contact_filter_reaches_past_the_recent_window(client):
+    """The whole point. Alice's chat is the least recently active, so a small
+    recent window misses it entirely -- which is exactly what made a
+    conversation unreachable before this existed."""
+    async with client:
+        recent = await client.call_tool("list_chats", {"limit": 2})
+    assert ALICE_CHAT not in {c["chat_guid"] for c in structured(recent)["items"]}
+
+    async with client:
+        found = await client.call_tool("list_chats", {"contact": "Alice"})
+    assert ALICE_CHAT in {c["chat_guid"] for c in structured(found)["items"]}
+
+
+async def test_contact_filter_with_no_match_says_so(client):
+    async with client:
+        result = await client.call_tool("list_chats", {"contact": "Nobody At All"})
+    body = structured(result)
+    assert body["total"] == 0
+    assert body["items"] == []
+    assert "No conversations found with 'Nobody At All'" in text(result)
+
+
+async def test_empty_contact_is_rejected(client):
+    async with client:
+        result = await client.call_tool("list_chats", {"contact": "  "})
+    assert "error" in structured(result)
+
+
+async def test_contact_filter_is_case_insensitive(client):
+    async with client:
+        lower = await client.call_tool("list_chats", {"contact": "alice"})
+        upper = await client.call_tool("list_chats", {"contact": "ALICE"})
+    assert structured(lower)["total"] == structured(upper)["total"] == 2

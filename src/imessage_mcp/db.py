@@ -110,8 +110,65 @@ def _message_row(row: sqlite3.Row) -> dict:
     }
 
 
-def list_chats(conn: sqlite3.Connection, limit: int = 20, offset: int = 0) -> list[dict]:
-    """Conversations in order of most recent activity."""
+# group_concat needs a separator that cannot occur in a handle. Unit separator
+# is the same choice dav-mcp makes in its event ids, for the same reason.
+_HANDLE_SEPARATOR = "\x1f"
+
+
+def chat_identities(conn: sqlite3.Connection) -> list[dict]:
+    """Just enough of every chat to match it against a name or handle.
+
+    Deliberately cheap: no per-chat subqueries, no message decoding. Matching
+    has to consider every conversation, not just recent ones -- the whole point
+    is finding somebody you have not spoken to lately -- so the query that runs
+    over all of them must stay small. The expensive detail query then runs only
+    for the ones that matched.
+    """
+    rows = conn.execute(
+        f"""
+        SELECT c.guid, c.chat_identifier, c.display_name,
+               group_concat(h.id, '{_HANDLE_SEPARATOR}') AS handles
+          FROM chat c
+          LEFT JOIN chat_handle_join chj ON chj.chat_id = c.ROWID
+          LEFT JOIN handle h ON h.ROWID = chj.handle_id
+         GROUP BY c.ROWID
+        """
+    ).fetchall()
+    return [
+        {
+            "chat_guid": row["guid"],
+            "chat_identifier": row["chat_identifier"],
+            "display_name": row["display_name"],
+            "handles": (row["handles"] or "").split(_HANDLE_SEPARATOR)
+            if row["handles"]
+            else [],
+        }
+        for row in rows
+    ]
+
+
+def list_chats(
+    conn: sqlite3.Connection,
+    limit: int = 20,
+    offset: int = 0,
+    guids: list[str] | None = None,
+) -> list[dict]:
+    """Conversations in order of most recent activity.
+
+    ``guids`` restricts the result to those conversations, keeping the same
+    ordering. An empty list means nothing matched and returns nothing, which is
+    different from ``None`` meaning no filter at all.
+    """
+    if guids is not None and not guids:
+        return []
+
+    restrict = ""
+    params: list = []
+    if guids is not None:
+        restrict = f"WHERE c.guid IN ({','.join('?' * len(guids))})"
+        params.extend(guids)
+    params.extend([limit, offset])
+
     rows = conn.execute(
         f"""
         SELECT c.guid, c.chat_identifier, c.display_name, c.service_name,
@@ -129,11 +186,12 @@ def list_chats(conn: sqlite3.Connection, limit: int = 20, offset: int = 0) -> li
                  ORDER BY m.date DESC LIMIT 1) AS last_message_id
           FROM chat c
           JOIN chat_message_join j ON j.chat_id = c.ROWID
+         {restrict}
          GROUP BY c.ROWID
          ORDER BY last_date DESC
          LIMIT ? OFFSET ?
         """,
-        (limit, offset),
+        params,
     ).fetchall()
 
     previews = _previews(conn, [r["last_message_id"] for r in rows])
@@ -179,14 +237,25 @@ def chat_exists(conn: sqlite3.Connection, chat_guid: str) -> bool:
     return row is not None
 
 
-def count_chats(conn: sqlite3.Connection) -> int:
+def count_chats(
+    conn: sqlite3.Connection, guids: list[str] | None = None
+) -> int:
     """Chats that have at least one message, matching what list_chats returns."""
+    if guids is not None and not guids:
+        return 0
+    restrict = ""
+    params: list = []
+    if guids is not None:
+        restrict = f"WHERE c.guid IN ({','.join('?' * len(guids))})"
+        params.extend(guids)
     row = conn.execute(
-        """
+        f"""
         SELECT COUNT(DISTINCT c.ROWID) AS n
           FROM chat c
           JOIN chat_message_join j ON j.chat_id = c.ROWID
-        """
+         {restrict}
+        """,
+        params,
     ).fetchone()
     return row["n"]
 
