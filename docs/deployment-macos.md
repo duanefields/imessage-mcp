@@ -152,6 +152,21 @@ Security → Automation only lets you toggle pairs macOS has already recorded.
 This does not apply yet — the current milestone is read-only — but it is the first thing to hit
 when sending lands.
 
+## `/health` is public, so keep it boring
+
+`/health` is a custom route, and custom routes do **not** sit behind the auth
+provider: it answers `200` to an unauthenticated request from the open internet
+while `/mcp` does not. That is deliberate — an external uptime monitor has to
+reach it without credentials, and a monitor running on the host cannot report
+that the host is gone.
+
+The consequence is a rule about the payload, not the routing: **nothing goes in
+it that you would not publish.** The interpreter path is reported because a uv
+upgrade moving it is what silently voids Full Disk Access, but it is reported
+relative to `~`, since the absolute form begins with the operator's account
+name and publishing that buys nothing. `scripts/healthcheck.sh` compares the
+interpreter by resolving it locally, so this costs the check nothing.
+
 ## Monitoring
 
 `scripts/healthcheck.sh` checks a running server and reports to a dead-man's-switch service such

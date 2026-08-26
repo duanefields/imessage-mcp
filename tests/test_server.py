@@ -377,3 +377,25 @@ async def test_contact_filter_is_case_insensitive(client):
         lower = await client.call_tool("list_chats", {"contact": "alice"})
         upper = await client.call_tool("list_chats", {"contact": "ALICE"})
     assert structured(lower)["total"] == structured(upper)["total"] == 2
+
+
+# ----------------------------------------------------------------------
+# /health is public
+# ----------------------------------------------------------------------
+
+
+def test_health_does_not_publish_the_operators_username():
+    """Custom routes are not behind the auth provider -- this endpoint answers
+    200 to an unauthenticated request from the open internet, which is intended
+    so a monitor can poll it. So nothing private may go in the payload, and the
+    interpreter path must not begin with /Users/<name>."""
+    import os
+
+    home = os.path.expanduser("~")
+    assert server._tilde(f"{home}/.local/share/uv/python/x/bin/python3.12") == (
+        "~/.local/share/uv/python/x/bin/python3.12"
+    )
+
+
+def test_tilde_leaves_a_path_outside_the_home_directory_alone():
+    assert server._tilde("/usr/bin/python3") == "/usr/bin/python3"

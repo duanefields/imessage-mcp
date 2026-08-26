@@ -444,14 +444,37 @@ def messages_is_running() -> bool:
     return result.returncode == 0
 
 
+def _tilde(path: str) -> str:
+    """Replace the home directory with `~`.
+
+    `/health` is a custom route, and custom routes are not behind the auth
+    provider -- verified against this server deployed: the endpoint answers 200
+    to an unauthenticated request from the open internet while `/mcp` does not.
+    That is intended, so an external uptime monitor can poll it without
+    credentials and a monitor on the host is not the only thing watching.
+
+    Which makes the payload the thing that has to be safe. The interpreter's
+    absolute path was not: it is reported for a good reason (see `health`) but
+    the absolute form begins with the operator's home directory, publishing
+    their account name to anyone who knows the hostname, for no benefit. The
+    version-stamped portion carries the whole warning and survives.
+    """
+    home = os.path.expanduser("~")
+    return f"~{path[len(home):]}" if home != "/" and path.startswith(home) else path
+
+
 @mcp.custom_route("/health", methods=["GET"])
 async def health(request):
     """Liveness, plus the two things that actually break this deployment.
 
+    Unauthenticated and public by design, so an uptime monitor can poll it. Do
+    not add anything here that would not be safe published -- see `_tilde`.
+
     `python` is reported because Full Disk Access is granted against the
     interpreter's resolved path, and a patch upgrade silently moves it and
     voids the grant. The service then hangs on its next restart with nothing in
-    the log. Watching this field is the early warning.
+    the log. Watching this field is the early warning. It is reported relative
+    to `~`, which keeps the version-stamped part that carries the warning.
 
     `newest_message` distinguishes a working server from one that is serving a
     database Messages has stopped writing to, and `messages_running` catches
@@ -459,7 +482,7 @@ async def health(request):
     """
     payload = {
         "status": "ok",
-        "python": os.path.realpath(sys.executable),
+        "python": _tilde(os.path.realpath(sys.executable)),
         "python_version": platform.python_version(),
         # Reported, but does not make the server unhealthy: reads work whether
         # or not Messages is up. It is the monitor's job to decide that a host
