@@ -12,6 +12,7 @@ private archive, ingests text from anybody who can text this account, and can
 send is the whole lethal trifecta in one process.
 """
 
+import datetime
 import json
 import logging
 import os
@@ -444,6 +445,22 @@ def messages_is_running() -> bool:
     return result.returncode == 0
 
 
+def _last_send_report() -> dict:
+    """The last send's outcome, with its timestamp as ISO 8601 UTC.
+
+    ``at`` is None until this process has attempted a send. That is not a
+    fault -- a freshly restarted server has not been asked to send anything --
+    so the monitor must not read a null as a failure.
+    """
+    record = applescript.last_send()
+    at = record["at"]
+    if at is not None:
+        record["at"] = datetime.datetime.fromtimestamp(
+            at, datetime.timezone.utc
+        ).isoformat()
+    return record
+
+
 def _tilde(path: str) -> str:
     """Replace the home directory with `~`.
 
@@ -488,6 +505,15 @@ async def health(request):
         # or not Messages is up. It is the monitor's job to decide that a host
         # which cannot send is a problem worth waking someone for.
         "messages_running": messages_is_running(),
+        # The outcome of the last send. `messages_running` does not cover this:
+        # a revoked Apple Events grant leaves Messages running and every read
+        # working while every send is dropped, so without this the server looks
+        # perfectly healthy while nothing it is asked to send goes anywhere.
+        #
+        # `error` is an exception class name and never a message -- see
+        # `applescript._publishable_failure`, which matters here more than
+        # anywhere else in this project.
+        "last_send": _last_send_report(),
     }
     try:
         conn = db.connect()

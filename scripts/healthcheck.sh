@@ -61,6 +61,7 @@ else
   status=$(jget status);  database=$(jget database)
   newest=$(jget newest_message); python=$(jget python_version)
   messages=$(jget messages_running)
+  send_ok=$(jget last_send.ok); send_error=$(jget last_send.error)
 
   if [[ -z "$status" ]]; then
     problems+=("could not parse the health response from $HEALTH_URL")
@@ -77,7 +78,7 @@ else
     [[ -n "$epoch" ]] && quiet=$(( $(date -u "+%s") - epoch ))
   fi
   report+="status=${status:-?} database=${database:-?} messages=${messages:-?}"
-  report+=" quiet=${quiet}s python=${python:-?}"
+  report+=" last_send=${send_ok:-none} quiet=${quiet}s python=${python:-?}"
 
   [[ -n "$status" && "$status" != "ok" ]] && problems+=("health status is '$status'")
   [[ -n "$database" && "$database" != "ok" ]] && problems+=("database is $database")
@@ -85,6 +86,17 @@ else
   # for, because nothing else about the server looks wrong.
   [[ "$messages" == "false" || "$messages" == "False" ]] &&
     problems+=("Messages.app is not running; sends will fail")
+
+  # The failure messages_running does not catch: the Apple Events grant for
+  # Messages can be revoked from System Settings, or voided by the interpreter
+  # moving, and then Messages is running and every read works while every send
+  # is dropped. Nothing else here goes yellow.
+  #
+  # Only "false" is a fault. An empty value means nothing has been sent since
+  # this process started, which is the normal state after a restart.
+  if [[ "$send_ok" == "false" || "$send_ok" == "False" ]]; then
+    problems+=("last send failed: ${send_error:-no detail}; the Apple Events grant for Messages may have been revoked")
+  fi
 
   if (( MAX_QUIET_SECONDS > 0 )) && [[ "$quiet" != "?" ]]; then
     if (( quiet > MAX_QUIET_SECONDS )); then

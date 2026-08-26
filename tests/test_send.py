@@ -219,3 +219,99 @@ async def test_confirmed_send_reports_the_message_it_found(
     conn.execute("DELETE FROM message WHERE ROWID = 900")
     conn.commit()
     conn.close()
+
+
+# ----------------------------------------------------------------------
+# What /health is told about the last send
+# ----------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def forget_the_last_send():
+    """The record lives in the module, so without this one test's send shows up
+    in the next one's assertions."""
+    applescript.reset_last_send()
+    yield
+    applescript.reset_last_send()
+
+
+def test_nothing_is_reported_before_the_first_send():
+    """A freshly restarted server has not been asked to send. That is not a
+    failure, and a monitor must not read it as one."""
+    assert applescript.last_send() == {
+        "at": None,
+        "ok": None,
+        "action": None,
+        "error": None,
+    }
+
+
+def test_a_successful_send_is_recorded(monkeypatch):
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda argv, **kw: subprocess.CompletedProcess(argv, 0, stdout="", stderr=""),
+    )
+    applescript.send_to_chat("SYNTHETIC-0001", "hello")
+    record = applescript.last_send()
+    assert record["ok"] is True
+    assert record["action"] == "send_message"
+    assert record["error"] is None
+
+
+def test_a_timeout_is_recorded_as_a_failed_send(monkeypatch):
+    def fake_run(argv, **kw):
+        raise subprocess.TimeoutExpired(argv, 30)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    with pytest.raises(applescript.SendTimeout):
+        applescript.send_to_chat("SYNTHETIC-0001", "hello")
+    assert applescript.last_send()["ok"] is False
+    assert applescript.last_send()["error"] == "SendTimeout"
+
+
+def test_a_refusal_is_recorded_as_a_failed_send(monkeypatch):
+    monkeypatch.setattr(
+        subprocess,
+        "run",
+        lambda argv, **kw: subprocess.CompletedProcess(
+            argv, 1, stdout="", stderr="Messages got an error (-1728)"
+        ),
+    )
+    with pytest.raises(applescript.SendError):
+        applescript.send_to_chat("SYNTHETIC-0001", "hello")
+    assert applescript.last_send()["ok"] is False
+    assert applescript.last_send()["error"] == "SendError"
+
+
+def test_the_published_failure_never_carries_the_message_text(monkeypatch):
+    """The sharpest version of this hazard in the project. /health is
+    unauthenticated and healthcheck.sh forwards it off the host, while the argv
+    osascript is handed is [chat_guid, text] -- the text being someone's
+    private message. Publishing stderr would send a conversation to a ping
+    service because somebody mistyped a chat guid."""
+    private = "meet me at the safehouse at midnight"
+
+    def fake_run(argv, **kw):
+        # osascript echoing back what it was given, which is the real shape.
+        return subprocess.CompletedProcess(
+            argv, 1, stdout="", stderr=f"osascript: error running {argv!r}"
+        )
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    with pytest.raises(applescript.SendError, match="safehouse"):
+        applescript.send_to_chat("SYNTHETIC-0001", private)
+
+    published = applescript.last_send()
+    assert published["error"] == "SendError"
+    assert private not in repr(published)
+    assert "safehouse" not in repr(published)
+
+
+def test_an_empty_message_is_not_recorded_as_a_failed_send():
+    """A caller's bad argument, rejected before Messages is consulted. It says
+    nothing about whether this host can still send, and recording it would page
+    somebody over a model's mistake."""
+    with pytest.raises(applescript.SendError):
+        applescript.send_to_chat("SYNTHETIC-0001", "")
+    assert applescript.last_send()["at"] is None
