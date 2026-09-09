@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Check a running imessage-mcp server and optionally report to a dead-man's-switch
-# service such as healthchecks.io.
+# service -- healthchecks.io or a self-hosted Uptime Kuma push monitor.
 #
 # Run it from cron or a LaunchAgent on the machine hosting the server. Reporting
 # outward matters: a monitor running on the same machine cannot tell you that the
@@ -10,7 +10,8 @@
 # Configuration comes from ~/.imessage-mcp/check.env, if it exists:
 #
 #   HEALTH_URL=http://127.0.0.1:18791/health
-#   PING_URL=https://hc-ping.com/your-uuid-here
+#   PING_URL=https://kuma.example.com/api/push/TOKEN   # or https://hc-ping.com/UUID
+#   PING_STYLE=auto  # auto | kuma | healthchecks
 #   EXPECTED_PYTHON=/Users/USERNAME/.local/share/uv/python/cpython-3.12.13-.../bin/python3.12
 #   VENV_PYTHON=/Users/USERNAME/Code/imessage-mcp/.venv/bin/python
 #   MAX_QUIET_SECONDS=0  # 0 disables the staleness check
@@ -26,6 +27,11 @@ CONFIG="${IMESSAGE_MCP_CHECK_ENV:-$HOME/.imessage-mcp/check.env}"
 
 HEALTH_URL="${HEALTH_URL:-http://127.0.0.1:8000/health}"
 PING_URL="${PING_URL:-}"
+# Which service PING_URL belongs to. "auto" recognizes an Uptime Kuma push URL
+# by its /api/push/ path and assumes healthchecks.io otherwise, which is right
+# for both of the URLs anyone actually pastes here. Override it when a reverse
+# proxy has rewritten the path out of recognition.
+PING_STYLE="${PING_STYLE:-auto}"
 EXPECTED_PYTHON="${EXPECTED_PYTHON:-}"
 VENV_PYTHON="${VENV_PYTHON:-}"
 # Off by default, and think before turning it on. The age of the newest message
@@ -39,9 +45,43 @@ MAX_QUIET_SECONDS="${MAX_QUIET_SECONDS:-0}"
 problems=()
 report=""
 
+case "$PING_STYLE" in
+  kuma|healthchecks) ping_style="$PING_STYLE" ;;
+  *) [[ "$PING_URL" == */api/push/* ]] && ping_style=kuma || ping_style=healthchecks ;;
+esac
+
+# Report a run to whichever service PING_URL points at.
+#
+# $1 is a healthchecks.io path suffix -- "/start", "/fail", or "" for success --
+# because that is what the call sites already pass. Uptime Kuma says the same
+# three things differently, so translate rather than teaching every call site
+# about both services.
 ping_hc() {
   [[ -z "$PING_URL" ]] && return 0
-  curl -fsS -m 10 --retry 3 --data-raw "$2" "${PING_URL}${1}" >/dev/null 2>&1 || true
+  local state="$1" body="${2:-}"
+
+  if [[ "$ping_style" == "kuma" ]]; then
+    # Kuma has no notion of a run starting. Pinging "up" here would report
+    # success before anything had been checked, so a start is simply not sent;
+    # the heartbeat interval is what catches a run that never finishes.
+    [[ "$state" == "/start" ]] && return 0
+
+    local status=up
+    [[ "$state" == "/fail" ]] && status=down
+
+    # Kuma reads status and msg from the query string and ignores a POST body,
+    # which is where healthchecks.io wants the same text. -G with
+    # --data-urlencode is what moves it, and encodes the spaces and newlines a
+    # failure report is full of. The report is folded to one line because
+    # Kuma's event table shows it on one.
+    curl -fsS -m 10 --retry 3 -G \
+      --data-urlencode "status=$status" \
+      --data-urlencode "msg=${body//$'\n'/ }" \
+      "$PING_URL" >/dev/null 2>&1 || true
+    return 0
+  fi
+
+  curl -fsS -m 10 --retry 3 --data-raw "$body" "${PING_URL}${state}" >/dev/null 2>&1 || true
 }
 
 ping_hc "/start" ""

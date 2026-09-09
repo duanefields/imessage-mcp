@@ -169,16 +169,21 @@ interpreter by resolving it locally, so this costs the check nothing.
 
 ## Monitoring
 
-`scripts/healthcheck.sh` checks a running server and reports to a dead-man's-switch service such
-as healthchecks.io. Configure it in `~/.imessage-mcp/check.env`:
+`scripts/healthcheck.sh` checks a running server and reports to a dead-man's-switch service.
+Either healthchecks.io or a self-hosted Uptime Kuma works; the script speaks both. Configure it
+in `~/.imessage-mcp/check.env`:
 
 ```bash
 HEALTH_URL=http://127.0.0.1:18791/health
-PING_URL=https://hc-ping.com/your-uuid-here
+PING_URL=https://kuma.example.com/api/push/TOKEN   # or https://hc-ping.com/UUID
+PING_STYLE=auto       # auto | kuma | healthchecks
 EXPECTED_PYTHON=/Users/USERNAME/.local/share/uv/python/cpython-3.12.13-.../bin/python3.12
 VENV_PYTHON=/Users/USERNAME/path/to/imessage-mcp/.venv/bin/python
 MAX_QUIET_SECONDS=0   # staleness check off; see below
 ```
+
+`auto` recognizes a Kuma push URL by its `/api/push/` path, so `PING_STYLE` only needs setting
+when a reverse proxy has rewritten that away.
 
 Expand `$REPO` and `~` yourself; cron does neither.
 
@@ -188,13 +193,16 @@ Expand `$REPO` and `~` yourself; cron does neither.
 
 `chmod 600` the config: the ping URL is a capability, not just an address.
 
-It reports failure on three things:
+It reports failure on five things:
 
 - **No response.** Either down, or hung on a permission prompt. A timeout is meaningful here,
   since the documented failure mode is a hang rather than a crash.
 - **The database is unreachable.** `/health` returns 503 and says so.
 - **Messages.app is not running.** Reads keep working, so nothing else looks wrong, but sending
   would fail. The host should be set to launch Messages at login.
+- **The last send failed.** The failure the one above does not catch: with the Apple Events grant
+  revoked, Messages is running and every read works while every send is dropped. Nothing else
+  about the server looks wrong.
 - **The interpreter moved.** The early warning for the privacy-approval problem above. Re-grant
   Full Disk Access and update `EXPECTED_PYTHON` together.
 
@@ -205,7 +213,37 @@ sync on a personal account. The age is reported on every run regardless, so let 
 an ordinary lull looks like, then pick a threshold no genuine silence would reach.
 
 An outward ping is what makes the whole machine being gone detectable. A monitor running on the
-same host cannot report its own host's death.
+same host cannot report its own host's death — which is the one thing to get right when the
+monitor is self-hosted rather than a service. Kuma has to run somewhere other than this Mac, or
+it goes down with the thing it is watching and reports nothing.
+
+### With Uptime Kuma
+
+Two monitors, doing different jobs.
+
+**A Push monitor**, which is Kuma's dead-man's switch and the direct equivalent of a
+healthchecks.io check. Create it, copy the push URL it shows into `PING_URL`, and set its
+heartbeat interval comfortably longer than the cron period — 15 minutes against a 10-minute cron,
+so one slow run is not an alert. The script pushes `status=up` with the same one-line report it
+logs, and `status=down` with the reason on a failure, which Kuma shows in its event table.
+
+This is the monitor that carries the checks only the host can make: the interpreter having moved
+out from under Full Disk Access, Messages.app not running, the last send having failed.
+
+**An HTTP(s) monitor with a Json Query**, pointed at the public `/health` through the tunnel, with
+the query `status` and expected value `ok`. This is the outside-in view the push monitor cannot
+give: it fails when the tunnel is down, when the server is hung on a permission prompt, or when
+`/health` returns its 503 for an unreachable database. It needs no credentials, which is exactly
+why `/health` is unauthenticated.
+
+Self-hosting removes the check limit that makes a hosted plan a decision, so run both rather than
+choosing. Neither replaces the other — the push monitor knows things `/health` deliberately does
+not publish, and the HTTP monitor knows whether anything outside the house can reach the server at
+all.
+
+The push URL is a capability in the same way the healthchecks.io ping URL is: anyone holding it
+can silence the alarm. Keep it in `check.env` at `chmod 600`, and out of this repository — the
+tracked docs say `kuma.example.com`, and the real host belongs in `docs/local/`.
 
 ## Deploying by pushing
 
@@ -216,8 +254,12 @@ the service, so a push is a deploy. Configure it in `~/.imessage-mcp/update.env`
 REPO_DIR=/Users/USERNAME/path/to/imessage-mcp
 BRANCH=main
 LAUNCH_LABEL=com.example.imessage-mcp   # omit to skip the restart
-PING_URL=https://hc-ping.com/a-different-uuid
+PING_URL=https://kuma.example.com/api/push/A-DIFFERENT-TOKEN
 ```
+
+Give the deploy its own monitor rather than reusing the healthcheck's. An hourly deploy and a
+ten-minute check cannot share one heartbeat interval, and a quiet deploy would keep marking the
+health check up.
 
 By default it refuses to touch a checkout whose tracked files have been modified, assuming
 somebody is debugging in place. On a host that is only ever deployed to, that assumption is wrong

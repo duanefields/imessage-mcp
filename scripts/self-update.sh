@@ -10,7 +10,8 @@
 #   REPO_DIR=/Users/USERNAME/Code/imessage-mcp
 #   BRANCH=main
 #   LAUNCH_LABEL=com.example.imessage-mcp   # omit to skip restarting anything
-#   PING_URL=https://hc-ping.com/your-uuid-here
+#   PING_URL=https://kuma.example.com/api/push/TOKEN   # or https://hc-ping.com/UUID
+#   PING_STYLE=auto                       # auto | kuma | healthchecks
 #   RESET_HARD=true                       # discard local edits; deploy-only hosts
 #
 # Nothing happens when the branch has not moved, so this is cheap to run often.
@@ -25,6 +26,10 @@ REPO_DIR="${REPO_DIR:-$HOME/Code/imessage-mcp}"
 BRANCH="${BRANCH:-main}"
 LAUNCH_LABEL="${LAUNCH_LABEL:-}"
 PING_URL="${PING_URL:-}"
+# See scripts/healthcheck.sh for what "auto" recognizes. Give this its own push
+# monitor rather than sharing the healthcheck's: a deploy that runs hourly and a
+# check that runs every ten minutes cannot share one heartbeat interval.
+PING_STYLE="${PING_STYLE:-auto}"
 UV="${UV:-/opt/homebrew/bin/uv}"
 # true makes the checkout match the branch exactly, discarding local edits. Right
 # for a host that is only ever deployed to; wrong anywhere someone might be
@@ -35,7 +40,31 @@ RESET_HARD="${RESET_HARD:-false}"
 LOCKDIR="/tmp/imessage-mcp-self-update.lock"
 
 log() { printf '[%s] %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*"; }
-ping_hc() { [[ -z "$PING_URL" ]] && return 0; curl -fsS -m 10 --retry 3 --data-raw "${2:-}" "${PING_URL}${1}" >/dev/null 2>&1 || true; }
+case "$PING_STYLE" in
+  kuma|healthchecks) ping_style="$PING_STYLE" ;;
+  *) [[ "$PING_URL" == */api/push/* ]] && ping_style=kuma || ping_style=healthchecks ;;
+esac
+
+# Healthchecks.io takes the state as a path suffix and the detail as a body;
+# Uptime Kuma takes both as query parameters and has no start signal. Call sites
+# speak the healthchecks shape and this translates -- same as healthcheck.sh.
+ping_hc() {
+  [[ -z "$PING_URL" ]] && return 0
+  local state="$1" body="${2:-}"
+
+  if [[ "$ping_style" == "kuma" ]]; then
+    [[ "$state" == "/start" ]] && return 0
+    local status=up
+    [[ "$state" == "/fail" ]] && status=down
+    curl -fsS -m 10 --retry 3 -G \
+      --data-urlencode "status=$status" \
+      --data-urlencode "msg=${body//$'\n'/ }" \
+      "$PING_URL" >/dev/null 2>&1 || true
+    return 0
+  fi
+
+  curl -fsS -m 10 --retry 3 --data-raw "$body" "${PING_URL}${state}" >/dev/null 2>&1 || true
+}
 
 if ! mkdir "$LOCKDIR" 2>/dev/null; then
   log "another run is in progress, skipping"
