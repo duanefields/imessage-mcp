@@ -134,8 +134,12 @@ An edited message is marked as such. Its text is already the latest version -- M
 `message_summary_info` tells the two apart, and such a message reads `[unsent]`. An unnamed
 group is titled by up to three of its members rather than its opaque `chat…` identifier.
 
-Deferred to a later pass, once the read surface has been used in anger: the edit history itself
-(the earlier versions held under `ec` in `message_summary_info`) and group rename events.
+The edit history itself -- the earlier versions held under `ec` in `message_summary_info` -- is
+deliberately not returned. An edit exists to correct a typo or fill in something missing, so the
+final version is the message; handing a model the superseded drafts invites it to quote or act on
+what the sender already took back.
+
+Deferred to a later pass, once the read surface has been used in anger: group rename events.
 
 ---
 
