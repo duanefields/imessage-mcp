@@ -146,6 +146,40 @@ def build(path: str | pathlib.Path) -> sqlite3.Connection:
         (apple_time(_minutes(6)),),
     )
 
+    # Reactions in the group, all on Alice's "Who's in for Game Night?" (rowid
+    # 6), using each shape of target the real database holds: a part prefix, an
+    # app-balloon prefix, and a bare guid. Bob laughed and then took it back,
+    # and the row for the removal is kept, as Messages sometimes does.
+    #
+    # (rowid, handle, from_me, minutes, type, target, emoji)
+    reactions = [
+        (15, 2, 0, 23, 2006, "p:0/SYNTHETIC-0006", "\U0001f389"),
+        (16, 2, 0, 23, 2003, "p:0/SYNTHETIC-0006", None),
+        (17, 2, 0, 24, 3003, "p:0/SYNTHETIC-0006", None),
+        (18, 0, 1, 24, 2001, "bp:SYNTHETIC-0006", None),
+        (19, 3, 0, 24, 1000, "SYNTHETIC-0006", None),
+    ]
+    for rowid, handle_id, from_me, offset, kind, target, emoji in reactions:
+        when = apple_time(_minutes(offset))
+        conn.execute(
+            "INSERT INTO message (ROWID, guid, handle_id, is_from_me, is_read, date,"
+            " service, is_finished, associated_message_type, associated_message_guid,"
+            " associated_message_emoji)"
+            " VALUES (?, ?, ?, ?, 1, ?, 'iMessage', 1, ?, ?, ?)",
+            (rowid, f"SYNTHETIC-{rowid:04d}", handle_id, from_me, when, kind, target, emoji),
+        )
+        conn.execute(
+            "INSERT INTO chat_message_join (chat_id, message_id, message_date)"
+            " VALUES (3, ?, ?)",
+            (rowid, when),
+        )
+
+    # Bob's "I'm in" is a reply in a thread started by Alice's question.
+    conn.execute(
+        "UPDATE message SET thread_originator_guid = 'SYNTHETIC-0006',"
+        " thread_originator_part = '0:0:24' WHERE ROWID = 7"
+    )
+
     # A system row: someone named the group. item_type 2 is a group-name change.
     conn.execute(
         "INSERT INTO message (ROWID, guid, handle_id, is_from_me, is_read, date,"

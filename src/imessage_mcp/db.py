@@ -33,7 +33,8 @@ _FILTER_LABELS = {1: "unknown sender", 2: "junk"}
 
 _MESSAGE_COLUMNS = """
     m.ROWID AS rowid, m.guid, m.text, m.attributedBody, m.is_from_me, m.date,
-    m.is_read, m.cache_has_attachments, m.service, h.id AS handle
+    m.is_read, m.cache_has_attachments, m.service, m.thread_originator_guid,
+    h.id AS handle
 """
 
 
@@ -114,7 +115,129 @@ def _message_row(row: sqlite3.Row) -> dict:
         "has_attachments": bool(row["cache_has_attachments"]),
         "service": row["service"],
         "handle": row["handle"],
+        # Just the guid until add_reply_context fills in who said what.
+        "reply_to": {"guid": row["thread_originator_guid"]}
+        if row["thread_originator_guid"]
+        else None,
     }
+
+
+def add_reply_context(conn: sqlite3.Connection, messages: list[dict]) -> None:
+    """Fill in the message each reply in ``messages`` was replying to, in place.
+
+    A reply in a thread names the message it answers by guid, and that message
+    is usually not on the same page -- it can be days older. Without it a reply
+    reads as a bare "yes" with nothing to say what was agreed to.
+    """
+    wanted = {m["reply_to"]["guid"] for m in messages if m.get("reply_to")}
+    if not wanted:
+        return
+    placeholders = ",".join("?" * len(wanted))
+    rows = conn.execute(
+        f"""
+        SELECT m.guid, m.text, m.attributedBody, m.is_from_me,
+               m.cache_has_attachments, h.id AS handle
+          FROM message m
+          LEFT JOIN handle h ON h.ROWID = m.handle_id
+         WHERE m.guid IN ({placeholders})
+        """,
+        list(wanted),
+    ).fetchall()
+    found = {
+        row["guid"]: {
+            "guid": row["guid"],
+            "text": message_text(row["text"], row["attributedBody"]),
+            "is_from_me": bool(row["is_from_me"]),
+            "has_attachments": bool(row["cache_has_attachments"]),
+            "handle": row["handle"],
+        }
+        for row in rows
+    }
+    for message in messages:
+        if message.get("reply_to"):
+            message["reply_to"] = found.get(
+                message["reply_to"]["guid"], message["reply_to"]
+            )
+
+
+# A reaction is its own row in the message table. associated_message_type 2000
+# to 2007 adds one, 3000 to 3007 takes the same kind back off, and 1000 is a
+# sticker placed on a message by an older client.
+_REACTION_KINDS = {
+    0: "loved",
+    1: "liked",
+    2: "disliked",
+    3: "laughed",
+    4: "emphasized",
+    5: "questioned",
+    6: "emoji",
+    7: "sticker",
+}
+
+
+def _reaction_target(associated_guid: str) -> str:
+    """The guid a reaction points at, without its message-part prefix.
+
+    The prefix says which part of the message was reacted to: ``p:0/`` for the
+    first part of an ordinary message, ``p:2/`` for its third, ``bp:`` for an
+    app balloon. Some rows carry the bare guid.
+    """
+    if associated_guid.startswith("bp:"):
+        return associated_guid[3:]
+    return associated_guid.rpartition("/")[2]
+
+
+def add_reactions(
+    conn: sqlite3.Connection, chat_guid: str, messages: list[dict]
+) -> None:
+    """Set ``reactions`` on each of ``messages``, in place.
+
+    Messages keeps only the latest state per person and kind: a removal usually
+    deletes the row it cancels, but not always, so the newest row for each
+    sender and kind decides whether that reaction stands. Which part of a
+    multi-part message was reacted to is not kept.
+    """
+    wanted = {m["guid"] for m in messages}
+    rows = conn.execute(
+        """
+        SELECT m.associated_message_guid, m.associated_message_type,
+               m.associated_message_emoji, m.is_from_me, h.id AS handle
+          FROM message m
+          JOIN chat_message_join j ON j.message_id = m.ROWID
+          JOIN chat c ON c.ROWID = j.chat_id
+          LEFT JOIN handle h ON h.ROWID = m.handle_id
+         WHERE c.guid = ?
+           AND (m.associated_message_type = 1000
+                OR m.associated_message_type BETWEEN 2000 AND 3007)
+         ORDER BY m.date
+        """,
+        (chat_guid,),
+    ).fetchall()
+
+    latest: dict[tuple, sqlite3.Row] = {}
+    for row in rows:
+        target = _reaction_target(row["associated_message_guid"] or "")
+        if target not in wanted:
+            continue
+        code = row["associated_message_type"]
+        kind = 7 if code == 1000 else code % 1000
+        sender = (row["is_from_me"], row["handle"])
+        latest[(target, sender, kind, row["associated_message_emoji"])] = row
+
+    reactions: dict[str, list[dict]] = {guid: [] for guid in wanted}
+    for (target, _, kind, emoji), row in latest.items():
+        if row["associated_message_type"] >= 3000:
+            continue
+        reactions[target].append(
+            {
+                "reaction": _REACTION_KINDS[kind],
+                "emoji": emoji,
+                "is_from_me": bool(row["is_from_me"]),
+                "handle": None if row["is_from_me"] else row["handle"],
+            }
+        )
+    for message in messages:
+        message["reactions"] = reactions[message["guid"]]
 
 
 # group_concat needs a separator that cannot occur in a handle. Unit separator
@@ -313,7 +436,7 @@ def count_messages(conn: sqlite3.Connection, chat_guid: str) -> int:
 def get_messages(
     conn: sqlite3.Connection, chat_guid: str, limit: int = 50, offset: int = 0
 ) -> list[dict]:
-    """Messages in one chat, newest first."""
+    """Messages in one chat, newest first, with their reactions and reply context."""
     rows = conn.execute(
         f"""
         SELECT {_MESSAGE_COLUMNS}
@@ -327,7 +450,10 @@ def get_messages(
         """,
         (chat_guid, limit, offset),
     ).fetchall()
-    return [_message_row(row) for row in rows]
+    messages = [_message_row(row) for row in rows]
+    add_reactions(conn, chat_guid, messages)
+    add_reply_context(conn, messages)
+    return messages
 
 
 def get_participants(conn: sqlite3.Connection, chat_guid: str) -> list[dict]:
@@ -382,7 +508,7 @@ def get_unread(conn: sqlite3.Connection, limit: int = 50) -> list[dict]:
         """,
         (limit,),
     ).fetchall()
-    return [
+    unread = [
         {
             **_message_row(row),
             "chat_guid": row["chat_guid"],
@@ -391,6 +517,8 @@ def get_unread(conn: sqlite3.Connection, limit: int = 50) -> list[dict]:
         }
         for row in rows
     ]
+    add_reply_context(conn, unread)
+    return unread
 
 
 def get_attachments(
@@ -488,4 +616,5 @@ def search_messages(
                     "display_name": row["display_name"],
                 }
             )
+    add_reply_context(conn, page)
     return page, total

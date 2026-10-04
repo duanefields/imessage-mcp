@@ -411,3 +411,16 @@ def test_health_does_not_publish_the_operators_username():
 
 def test_tilde_leaves_a_path_outside_the_home_directory_alone():
     assert server._tilde("/usr/bin/python3") == "/usr/bin/python3"
+
+
+async def test_quoted_reply_text_is_remembered_as_read(client):
+    """The original a reply quotes was shown, even when it is not on the page,
+    so forwarding it elsewhere has to be caught like any other read."""
+    from imessage_mcp import provenance
+
+    async with client:
+        await client.call_tool("get_messages", {"chat_guid": GROUP_CHAT, "limit": 2})
+
+    assert provenance.cross_chat_sources(
+        ALICE_CHAT, "Who's in for Game Night?"
+    ) == [GROUP_CHAT]

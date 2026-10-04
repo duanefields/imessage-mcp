@@ -79,9 +79,46 @@ def test_format_chat_omits_unread_when_there_is_none(conn, resolver):
 def test_format_messages_renders_a_transcript(conn, resolver):
     rendered = formatters.format_messages(db.get_messages(conn, ALICE_CHAT), resolver)
     lines = rendered.splitlines()
-    assert len(lines) == 3
+    assert len(lines) == 4
     assert "Alice Example: Bringing the good dice 🎲" in lines[0]
     assert "me: Yes — 7pm works" in lines[1]
+    assert lines[3] == "  ↳ reactions: Alice Example loved"
+
+
+def test_format_message_shows_reactions_by_name(conn, resolver):
+    rendered = formatters.format_messages(db.get_messages(conn, GROUP_CHAT), resolver)
+    reactions = next(line for line in rendered.splitlines() if "reactions" in line)
+    assert "Bob Example \U0001f389" in reactions
+    assert "me liked" in reactions
+    assert "+15125550103 sticker" in reactions
+    assert "laughed" not in reactions
+
+
+def test_format_message_shows_what_a_reply_replied_to(conn, resolver):
+    rendered = formatters.format_messages(db.get_messages(conn, GROUP_CHAT), resolver)
+    lines = rendered.splitlines()
+    reply = next(i for i, line in enumerate(lines) if "Bob Example: I'm in" in line)
+    assert lines[reply + 1] == "  ↳ replying to Alice Example: Who's in for Game Night?"
+
+
+def test_format_message_shortens_a_long_quoted_original():
+    message = {
+        "is_from_me": True,
+        "date": "t",
+        "text": "yes",
+        "reply_to": {"guid": "G", "text": "x" * 200, "is_from_me": False, "handle": "h"},
+    }
+    quoted = formatters.format_message(message).splitlines()[1]
+    assert quoted.endswith("x…")
+    assert len(quoted) < 120
+
+
+def test_format_message_survives_a_reply_to_a_missing_message():
+    """The original can be gone: deleted, or expired from recently deleted."""
+    message = {"is_from_me": True, "date": "t", "text": "yes", "reply_to": {"guid": "G"}}
+    assert formatters.format_message(message).splitlines()[1] == (
+        "  ↳ replying to someone: a message no longer here"
+    )
 
 
 def test_format_participants_keeps_the_handle_alongside_the_name(conn, resolver):

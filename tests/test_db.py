@@ -69,6 +69,60 @@ def test_get_messages_excludes_tapbacks_and_system_rows(conn):
     assert len(group) == 3
 
 
+def test_reactions_attach_to_the_message_they_react_to(conn):
+    messages = {m["guid"]: m for m in db.get_messages(conn, GROUP_CHAT)}
+    reactions = messages["SYNTHETIC-0006"]["reactions"]
+    assert sorted((r["reaction"], r["handle"], r["is_from_me"]) for r in reactions) == [
+        ("emoji", BOB, False),
+        ("liked", None, True),
+        ("sticker", "+15125550103", False),
+    ]
+    assert next(r for r in reactions if r["reaction"] == "emoji")["emoji"] == "\U0001f389"
+    assert messages["SYNTHETIC-0007"]["reactions"] == []
+
+
+def test_a_removed_reaction_does_not_stand(conn):
+    """Bob laughed, then took it back; the removal row is newer and wins."""
+    messages = {m["guid"]: m for m in db.get_messages(conn, GROUP_CHAT)}
+    assert "laughed" not in {r["reaction"] for r in messages["SYNTHETIC-0006"]["reactions"]}
+
+
+def test_reaction_target_strips_the_part_prefix():
+    assert db._reaction_target("p:0/SYNTHETIC-0001") == "SYNTHETIC-0001"
+    assert db._reaction_target("p:12/SYNTHETIC-0001") == "SYNTHETIC-0001"
+    assert db._reaction_target("bp:SYNTHETIC-0001") == "SYNTHETIC-0001"
+    assert db._reaction_target("SYNTHETIC-0001") == "SYNTHETIC-0001"
+
+
+def test_reactions_are_not_counted_as_messages(conn):
+    assert db.count_messages(conn, GROUP_CHAT) == 3
+
+
+def test_a_reply_carries_the_message_it_replied_to(conn):
+    messages = {m["guid"]: m for m in db.get_messages(conn, GROUP_CHAT)}
+    assert messages["SYNTHETIC-0007"]["reply_to"] == {
+        "guid": "SYNTHETIC-0006",
+        "text": "Who's in for Game Night?",
+        "is_from_me": False,
+        "has_attachments": False,
+        "handle": ALICE,
+    }
+    assert messages["SYNTHETIC-0008"]["reply_to"] is None
+
+
+def test_reply_context_reaches_past_the_page(conn):
+    """The original is older than the reply, so a one-message page lacks it."""
+    page = db.get_messages(conn, GROUP_CHAT, limit=2)
+    assert "SYNTHETIC-0006" not in {m["guid"] for m in page}
+    reply = next(m for m in page if m["guid"] == "SYNTHETIC-0007")
+    assert reply["reply_to"]["text"] == "Who's in for Game Night?"
+
+
+def test_search_results_carry_reply_context(conn):
+    matches, _ = db.search_messages(conn, "I'm in")
+    assert matches[0]["reply_to"]["text"] == "Who's in for Game Night?"
+
+
 def test_get_messages_direction_and_handles(conn):
     messages = db.get_messages(conn, ALICE_CHAT)
     latest = messages[0]

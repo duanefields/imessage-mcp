@@ -121,9 +121,15 @@ Default to a recent window for latency, scan the whole archive when asked, and s
 result which of the two happened. The 2.77s figure came off a warm page cache, so a cold run will
 be slower — the window default covers that case as well.
 
-Deferred to a later pass, once the read surface has been used in anger: tapbacks
-(`associated_message_type`), edits and retractions (`date_edited`, `date_retracted`), threaded
-replies (`thread_originator_guid`), and group rename events.
+Tapbacks are not messages of their own. `get_messages` attaches each one to the message it
+reacts to, matched through `associated_message_guid` once its part prefix (`p:N/`, `bp:`) is
+stripped; the newest row per sender and kind decides whether a reaction still stands. Which part
+of a multi-part message was reacted to is dropped. A reply in a thread
+(`thread_originator_guid`) carries the message it answers in `get_messages`, `get_unread` and
+`search_messages`, fetched by guid because it is rarely on the same page.
+
+Deferred to a later pass, once the read surface has been used in anger: edits and retractions
+(`date_edited`, `date_retracted`, `message_summary_info`) and group rename events.
 
 ---
 

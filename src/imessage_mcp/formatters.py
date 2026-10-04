@@ -66,12 +66,45 @@ def format_chats(chats: list[dict], resolver: ContactResolver | None = None) -> 
     return "\n\n".join(format_chat(chat, resolver) for chat in chats)
 
 
+# Long enough to recognize the message being replied to, short enough that a
+# thread of replies to one long message does not repeat it in full each time.
+REPLY_QUOTE_LIMIT = 80
+
+
+def _sender(message: dict, resolver: ContactResolver | None) -> str:
+    return "me" if message.get("is_from_me") else _label(message.get("handle"), resolver)
+
+
+def _quote(message: dict) -> str:
+    body = _body(message) if "text" in message else "a message no longer here"
+    if len(body) > REPLY_QUOTE_LIMIT:
+        body = body[: REPLY_QUOTE_LIMIT - 1] + "…"
+    return body
+
+
+def _reaction(reaction: dict, resolver: ContactResolver | None) -> str:
+    who = _sender(reaction, resolver)
+    if reaction["reaction"] == "emoji" and reaction.get("emoji"):
+        return f"{who} {reaction['emoji']}"
+    if reaction["reaction"] == "sticker":
+        return f"{who} sticker"
+    return f"{who} {reaction['reaction']}"
+
+
 def format_message(message: dict, resolver: ContactResolver | None = None) -> str:
-    who = "me" if message.get("is_from_me") else _label(message.get("handle"), resolver)
+    who = _sender(message, resolver)
     if message.get("filtered"):
         who += f" [{message['filtered']}]"
     when = message.get("date") or "unknown time"
-    return f"[{when}] {who}: {_body(message)}"
+    lines = [f"[{when}] {who}: {_body(message)}"]
+    reply_to = message.get("reply_to")
+    if reply_to:
+        original = _sender(reply_to, resolver) if "text" in reply_to else "someone"
+        lines.append(f"  ↳ replying to {original}: {_quote(reply_to)}")
+    if message.get("reactions"):
+        reactions = ", ".join(_reaction(r, resolver) for r in message["reactions"])
+        lines.append(f"  ↳ reactions: {reactions}")
+    return "\n".join(lines)
 
 
 def format_messages(
