@@ -110,6 +110,35 @@ def test_format_message_marks_edits_and_unsends():
     assert formatters.format_message(unsent) == "[t] me: [unsent]"
 
 
+def test_format_unread_groups_by_conversation_in_order_of_newest(resolver):
+    group = {
+        "chat_guid": "G",
+        "chat_identifier": "chat888",
+        "display_name": None,
+        "handles": [ALICE, DANA_EMAIL],
+    }
+    direct = {"chat_guid": "D", "chat_identifier": DANA_EMAIL, "handles": [DANA_EMAIL]}
+    unread = [
+        {**group, "date": "t3", "handle": ALICE, "text": "newest, in the group"},
+        {**direct, "date": "t2", "handle": DANA_EMAIL, "text": "direct"},
+        {**group, "date": "t1", "handle": DANA_EMAIL, "text": "older, in the group"},
+    ]
+    assert formatters.format_unread(unread, resolver).splitlines() == [
+        "Alice Example, Dana Example",
+        "  guid: G",
+        "  [t3] Alice Example: newest, in the group",
+        "  [t1] Dana Example: older, in the group",
+        "",
+        "Dana Example",
+        "  guid: D",
+        "  [t2] Dana Example: direct",
+    ]
+
+
+def test_format_unread_with_nothing_unread():
+    assert formatters.format_unread([]) == "No unread messages."
+
+
 def test_format_messages_renders_a_transcript(conn, resolver):
     rendered = formatters.format_messages(db.get_messages(conn, ALICE_CHAT), resolver)
     lines = rendered.splitlines()

@@ -528,7 +528,11 @@ def get_unread(conn: sqlite3.Connection, limit: int = 50) -> list[dict]:
     rows = conn.execute(
         f"""
         SELECT {_MESSAGE_COLUMNS}, c.guid AS chat_guid, c.display_name,
-               c.is_filtered
+               c.is_filtered, c.chat_identifier,
+               (SELECT group_concat(h2.id, '{_HANDLE_SEPARATOR}')
+                  FROM chat_handle_join chj
+                  JOIN handle h2 ON h2.ROWID = chj.handle_id
+                 WHERE chj.chat_id = c.ROWID) AS chat_handles
           FROM message m
           JOIN chat_message_join j ON j.message_id = m.ROWID
           JOIN chat c ON c.ROWID = j.chat_id
@@ -543,7 +547,9 @@ def get_unread(conn: sqlite3.Connection, limit: int = 50) -> list[dict]:
         {
             **_message_row(row),
             "chat_guid": row["chat_guid"],
+            "chat_identifier": row["chat_identifier"],
             "display_name": row["display_name"],
+            "handles": _split_handles(row["chat_handles"]),
             "filtered": _FILTER_LABELS.get(row["is_filtered"]),
         }
         for row in rows

@@ -140,6 +140,34 @@ def format_messages(
     return "\n".join(format_message(message, resolver) for message in messages)
 
 
+def format_unread(messages: list[dict], resolver: ContactResolver | None = None) -> str:
+    """Unread messages under a heading for each conversation they arrived in.
+
+    Unread spans every conversation, so a line on its own does not say whether
+    it came from a group or from the sender directly. Conversations keep the
+    order of their newest unread message, and each heading carries the
+    chat_guid a reply would need.
+    """
+    if not messages:
+        return "No unread messages."
+    by_chat: dict[str, list[dict]] = {}
+    for message in messages:
+        by_chat.setdefault(message["chat_guid"], []).append(message)
+
+    blocks = []
+    for chat_guid, unread in by_chat.items():
+        heading = chat_title(unread[0], resolver)
+        if unread[0].get("filtered"):
+            heading += f" [{unread[0]['filtered']}]"
+        lines = [heading, f"  guid: {chat_guid}"]
+        for message in unread:
+            # The heading already carries the filter label.
+            rendered = format_message({**message, "filtered": None}, resolver)
+            lines.extend(f"  {line}" for line in rendered.splitlines())
+        blocks.append("\n".join(lines))
+    return "\n\n".join(blocks)
+
+
 def format_participants(
     participants: list[dict], resolver: ContactResolver | None = None
 ) -> str:

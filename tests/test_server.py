@@ -182,8 +182,21 @@ async def test_unread(client):
     body = structured(result)
     assert body["count"] == 3
     assert all(item["is_from_me"] is False for item in body["items"])
-    assert f"{STRANGER} [unknown sender]:" in text(result)
     assert "won a prize" not in text(result)
+
+
+async def test_unread_says_which_conversation_each_message_is_in(client):
+    async with client:
+        result = await client.call_tool("get_unread", {})
+
+    lines = text(result).splitlines()
+    stranger = lines.index(f"{STRANGER} [unknown sender]")
+    assert lines[stranger + 1] == f"  guid: SMS;-;{STRANGER}"
+    assert lines[stranger + 2].endswith(f"{STRANGER}: Your package is out for delivery")
+    dana = lines.index("Dana Example")
+    assert lines[dana + 1] == f"  guid: iMessage;-;{DANA_EMAIL}"
+    # Dana's two messages sit under one heading, not one each.
+    assert text(result).count("Dana Example\n") == 1
 
 
 async def test_unread_reports_the_true_total_beyond_the_page(client):
