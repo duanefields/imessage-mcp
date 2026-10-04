@@ -8,6 +8,7 @@ a recoverable mistake.
 import datetime
 import os
 import pathlib
+import plistlib
 import sqlite3
 
 from .attributed import message_text
@@ -34,7 +35,7 @@ _FILTER_LABELS = {1: "unknown sender", 2: "junk"}
 _MESSAGE_COLUMNS = """
     m.ROWID AS rowid, m.guid, m.text, m.attributedBody, m.is_from_me, m.date,
     m.is_read, m.cache_has_attachments, m.service, m.thread_originator_guid,
-    h.id AS handle
+    m.date_edited, m.message_summary_info, h.id AS handle
 """
 
 
@@ -105,12 +106,35 @@ def find_outgoing(
     return None
 
 
+def _is_unsent(row: sqlite3.Row, text: str | None) -> bool:
+    """Whether the sender took the whole message back.
+
+    Unsending stamps date_edited just as editing does, and leaves the row in
+    place with its text gone. What tells the two apart is the list of retracted
+    parts, ``rp``, in the message_summary_info plist. Only a row with an edit
+    date and no text left can be fully unsent, so only that row is parsed.
+    """
+    if not row["date_edited"] or text or not row["message_summary_info"]:
+        return False
+    try:
+        info = plistlib.loads(row["message_summary_info"])
+    except Exception:
+        return False
+    return bool(isinstance(info, dict) and info.get("rp"))
+
+
 def _message_row(row: sqlite3.Row) -> dict:
+    text = message_text(row["text"], row["attributedBody"])
+    unsent = _is_unsent(row, text)
     return {
         "guid": row["guid"],
-        "text": message_text(row["text"], row["attributedBody"]),
+        "text": text,
         "is_from_me": bool(row["is_from_me"]),
         "date": to_iso(row["date"]),
+        # The text above is already the latest version; Messages rewrites
+        # attributedBody on every edit and keeps the history elsewhere.
+        "edited_at": None if unsent else to_iso(row["date_edited"]),
+        "unsent": unsent,
         "is_read": bool(row["is_read"]),
         "has_attachments": bool(row["cache_has_attachments"]),
         "service": row["service"],
@@ -245,6 +269,10 @@ def add_reactions(
 _HANDLE_SEPARATOR = "\x1f"
 
 
+def _split_handles(joined: str | None) -> list[str]:
+    return joined.split(_HANDLE_SEPARATOR) if joined else []
+
+
 def chat_identities(conn: sqlite3.Connection) -> list[dict]:
     """Just enough of every chat to match it against a name or handle.
 
@@ -269,9 +297,7 @@ def chat_identities(conn: sqlite3.Connection) -> list[dict]:
             "chat_guid": row["guid"],
             "chat_identifier": row["chat_identifier"],
             "display_name": row["display_name"],
-            "handles": (row["handles"] or "").split(_HANDLE_SEPARATOR)
-            if row["handles"]
-            else [],
+            "handles": _split_handles(row["handles"]),
         }
         for row in rows
     ]
@@ -304,6 +330,10 @@ def list_chats(
         f"""
         SELECT c.guid, c.chat_identifier, c.display_name, c.service_name,
                c.is_filtered, MAX(j.message_date) AS last_date,
+               (SELECT group_concat(h.id, '{_HANDLE_SEPARATOR}')
+                  FROM chat_handle_join chj
+                  JOIN handle h ON h.ROWID = chj.handle_id
+                 WHERE chj.chat_id = c.ROWID) AS handles,
                (SELECT COUNT(*)
                   FROM message m
                   JOIN chat_message_join j2 ON j2.message_id = m.ROWID
@@ -332,6 +362,7 @@ def list_chats(
             "chat_guid": row["guid"],
             "chat_identifier": row["chat_identifier"],
             "display_name": row["display_name"],
+            "handles": _split_handles(row["handles"]),
             "service": row["service_name"],
             "last_activity": to_iso(row["last_date"]),
             "unread_count": row["unread_count"],

@@ -12,6 +12,7 @@ approximation and failing on the real database.
 
 import datetime
 import pathlib
+import plistlib
 import sqlite3
 
 from .typedstream_writer import attributed_body
@@ -173,6 +174,45 @@ def build(path: str | pathlib.Path) -> sqlite3.Connection:
             " VALUES (3, ?, ?)",
             (rowid, when),
         )
+
+    # "Yes — 7pm works" was edited from an earlier draft. Messages rewrites
+    # attributedBody to the latest text and keeps the history in the
+    # message_summary_info plist: per part, each version as a typedstream.
+    edited_at = _minutes(3)
+    history = {
+        "ec": {
+            "0": [
+                {"t": attributed_body("Yes — 6pm works"), "d": 0.0},
+                {"t": attributed_body("Yes — 7pm works"), "d": 0.0},
+            ]
+        },
+        "ep": [0],
+        "otr": {},
+        "ust": True,
+    }
+    conn.execute(
+        "UPDATE message SET date_edited = ?, message_summary_info = ? WHERE ROWID = 2",
+        (apple_time(edited_at), plistlib.dumps(history, fmt=plistlib.FMT_BINARY)),
+    )
+
+    # Bob sent something and unsent it. The row stays, with its text gone, an
+    # edit date, and the retracted part listed under "rp".
+    unsent_at = _minutes(11)
+    conn.execute(
+        "INSERT INTO message (ROWID, guid, handle_id, is_from_me, is_read, date,"
+        " service, is_finished, date_edited, message_summary_info)"
+        " VALUES (20, 'SYNTHETIC-0020', 2, 0, 1, ?, 'iMessage', 1, ?, ?)",
+        (
+            apple_time(unsent_at),
+            apple_time(unsent_at + datetime.timedelta(seconds=30)),
+            plistlib.dumps({"rp": [0], "otr": {}, "ust": True}, fmt=plistlib.FMT_BINARY),
+        ),
+    )
+    conn.execute(
+        "INSERT INTO chat_message_join (chat_id, message_id, message_date)"
+        " VALUES (2, 20, ?)",
+        (apple_time(unsent_at),),
+    )
 
     # Bob's "I'm in" is a reply in a thread started by Alice's question.
     conn.execute(

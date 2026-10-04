@@ -10,6 +10,11 @@ from .contacts import ContactResolver
 # an expired audio message. That is a fact worth showing, not an error.
 NO_TEXT = "[no text]"
 ATTACHMENT_ONLY = "[attachment]"
+UNSENT = "[unsent]"
+
+# An unnamed group is titled by its members, and a large one would otherwise
+# put its whole membership in every listing.
+GROUP_TITLE_NAMES = 3
 
 
 def _label(handle: str | None, resolver: ContactResolver | None) -> str:
@@ -24,6 +29,8 @@ def _body(message: dict) -> str:
     text = message.get("text")
     if text:
         return text
+    if message.get("unsent"):
+        return UNSENT
     return ATTACHMENT_ONLY if message.get("has_attachments") else NO_TEXT
 
 
@@ -39,9 +46,26 @@ def format_size(size_bytes: int | None) -> str:
 
 
 def chat_title(chat: dict, resolver: ContactResolver | None = None) -> str:
-    """A group's name, or the other person's name, or the raw identifier."""
+    """A group's name, or its members' names, or the other person's name.
+
+    An unnamed group's chat_identifier is an opaque ``chat`` followed by digits,
+    which says nothing about who is in it. A one-to-one chat's identifier is the
+    other person's handle, which is how the two are told apart.
+    """
     if chat.get("display_name"):
         return chat["display_name"]
+    handles = chat.get("handles") or []
+    if handles and chat.get("chat_identifier") not in handles:
+        # Known names first, then the handles nobody could put a name to.
+        names = sorted(
+            (_label(h, resolver) for h in handles),
+            key=lambda name: (not name[:1].isalpha(), name.casefold()),
+        )
+        shown = ", ".join(names[:GROUP_TITLE_NAMES])
+        others = len(names) - GROUP_TITLE_NAMES
+        if others > 0:
+            shown += f" and {others} other{'s' if others > 1 else ''}"
+        return shown
     return _label(chat.get("chat_identifier"), resolver)
 
 
@@ -96,7 +120,8 @@ def format_message(message: dict, resolver: ContactResolver | None = None) -> st
     if message.get("filtered"):
         who += f" [{message['filtered']}]"
     when = message.get("date") or "unknown time"
-    lines = [f"[{when}] {who}: {_body(message)}"]
+    edited = " (edited)" if message.get("edited_at") else ""
+    lines = [f"[{when}] {who}: {_body(message)}{edited}"]
     reply_to = message.get("reply_to")
     if reply_to:
         original = _sender(reply_to, resolver) if "text" in reply_to else "someone"

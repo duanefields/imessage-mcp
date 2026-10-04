@@ -76,6 +76,40 @@ def test_format_chat_omits_unread_when_there_is_none(conn, resolver):
     assert "unread" not in formatters.format_chat(chats[ALICE_CHAT], resolver)
 
 
+def test_chat_title_names_an_unnamed_group_by_its_members(resolver):
+    chat = {"chat_identifier": "chat888", "handles": [ALICE, DANA_EMAIL, "+15125550103"]}
+    assert formatters.chat_title(chat, resolver) == (
+        "Alice Example, Dana Example, +15125550103"
+    )
+
+
+def test_chat_title_caps_a_large_unnamed_group(resolver):
+    handles = [ALICE, "+15125550102", DANA_EMAIL, "+15125550103", "+15125550104"]
+    chat = {"chat_identifier": "chat888", "handles": handles}
+    assert formatters.chat_title(chat, resolver) == (
+        "Alice Example, Bob Example, Dana Example and 2 others"
+    )
+    chat["handles"] = handles[:4]
+    assert formatters.chat_title(chat, resolver).endswith(" and 1 other")
+
+
+def test_chat_title_of_a_one_to_one_chat_is_the_other_person(resolver):
+    """Its identifier is the other person's handle, so it is not a group."""
+    chat = {"chat_identifier": ALICE, "handles": [ALICE]}
+    assert formatters.chat_title(chat, resolver) == "Alice Example"
+
+
+def test_chat_title_of_an_empty_unnamed_group_falls_back_to_its_identifier(resolver):
+    assert formatters.chat_title({"chat_identifier": "chat888", "handles": []}, resolver) == "chat888"
+
+
+def test_format_message_marks_edits_and_unsends():
+    edited = {"is_from_me": True, "date": "t", "text": "7pm", "edited_at": "t2"}
+    assert formatters.format_message(edited) == "[t] me: 7pm (edited)"
+    unsent = {"is_from_me": True, "date": "t", "text": None, "unsent": True}
+    assert formatters.format_message(unsent) == "[t] me: [unsent]"
+
+
 def test_format_messages_renders_a_transcript(conn, resolver):
     rendered = formatters.format_messages(db.get_messages(conn, ALICE_CHAT), resolver)
     lines = rendered.splitlines()

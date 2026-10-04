@@ -128,8 +128,14 @@ of a multi-part message was reacted to is dropped. A reply in a thread
 (`thread_originator_guid`) carries the message it answers in `get_messages`, `get_unread` and
 `search_messages`, fetched by guid because it is rarely on the same page.
 
-Deferred to a later pass, once the read surface has been used in anger: edits and retractions
-(`date_edited`, `date_retracted`, `message_summary_info`) and group rename events.
+An edited message is marked as such. Its text is already the latest version -- Messages rewrites
+`attributedBody` on each edit -- so marking it needs only `date_edited`. Unsending stamps
+`date_edited` too, leaving the row with no text; the retracted-parts list (`rp`) in
+`message_summary_info` tells the two apart, and such a message reads `[unsent]`. An unnamed
+group is titled by up to three of its members rather than its opaque `chat…` identifier.
+
+Deferred to a later pass, once the read surface has been used in anger: the edit history itself
+(the earlier versions held under `ec` in `message_summary_info`) and group rename events.
 
 ---
 

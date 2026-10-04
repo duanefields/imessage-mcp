@@ -123,6 +123,30 @@ def test_search_results_carry_reply_context(conn):
     assert matches[0]["reply_to"]["text"] == "Who's in for Game Night?"
 
 
+def test_an_edited_message_says_so_and_shows_its_latest_text(conn):
+    messages = {m["guid"]: m for m in db.get_messages(conn, ALICE_CHAT)}
+    edited = messages["SYNTHETIC-0002"]
+    assert edited["text"] == "Yes — 7pm works"
+    assert edited["edited_at"] is not None
+    assert edited["unsent"] is False
+    assert messages["SYNTHETIC-0001"]["edited_at"] is None
+
+
+def test_an_unsent_message_is_not_called_edited(conn):
+    """Unsending stamps date_edited too; the retracted-parts list tells them apart."""
+    messages = {m["guid"]: m for m in db.get_messages(conn, BOB_CHAT)}
+    unsent = messages["SYNTHETIC-0020"]
+    assert unsent["unsent"] is True
+    assert unsent["text"] is None
+    assert unsent["edited_at"] is None
+
+
+def test_list_chats_carries_handles(conn):
+    chats = {c["chat_guid"]: c for c in db.list_chats(conn)}
+    assert sorted(chats[GROUP_CHAT]["handles"]) == sorted([ALICE, BOB, "+15125550103"])
+    assert chats[ALICE_CHAT]["handles"] == [ALICE]
+
+
 def test_get_messages_direction_and_handles(conn):
     messages = db.get_messages(conn, ALICE_CHAT)
     latest = messages[0]
