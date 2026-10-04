@@ -437,3 +437,80 @@ async def test_quoted_reply_text_is_remembered_as_read(client):
     assert provenance.cross_chat_sources(
         ALICE_CHAT, "Who's in for Game Night?"
     ) == [GROUP_CHAT]
+
+
+# The claude.ai connector gives the model the structured half of a result and
+# never the text, so everything below reads only structured content.
+
+
+async def test_participants_carry_names_in_structured_content(client):
+    async with client:
+        result = await client.call_tool("get_participants", {"chat_guid": GROUP_CHAT})
+
+    names = {p["handle"]: p["name"] for p in structured(result)["items"]}
+    assert names[ALICE] == "Alice Example"
+    # Carol is not in the address book, and says so with a null.
+    assert names["+15125550103"] is None
+
+
+async def test_messages_carry_sender_reply_and_reaction_names(client):
+    async with client:
+        result = await client.call_tool("get_messages", {"chat_guid": GROUP_CHAT})
+
+    items = {m["guid"]: m for m in structured(result)["items"]}
+    reply = items["SYNTHETIC-0007"]
+    assert reply["name"] == "Bob Example"
+    assert reply["reply_to"]["name"] == "Alice Example"
+    reactions = {r["reaction"]: r for r in items["SYNTHETIC-0006"]["reactions"]}
+    assert reactions["emoji"]["name"] == "Bob Example"
+    assert reactions["liked"]["name"] is None and reactions["liked"]["is_from_me"]
+    # My own messages carry no name; is_from_me already says who.
+    assert items["SYNTHETIC-0008"]["name"] is None
+
+
+async def test_chats_carry_a_title_and_named_participants(client):
+    async with client:
+        result = await client.call_tool("list_chats", {})
+
+    chats = {c["chat_guid"]: c for c in structured(result)["items"]}
+    group = chats[GROUP_CHAT]
+    assert group["title"] == GROUP_NAME
+    assert {"handle": ALICE, "name": "Alice Example"} in group["participants"]
+    assert "handles" not in group
+    assert chats[ALICE_CHAT]["title"] == "Alice Example"
+
+
+async def test_unread_messages_carry_their_conversation_title(client):
+    async with client:
+        result = await client.call_tool("get_unread", {})
+
+    for item in structured(result)["items"]:
+        assert "chat_title" in item
+        assert "handles" not in item
+    dana = next(i for i in structured(result)["items"] if i["handle"] == DANA_EMAIL)
+    assert dana["name"] == "Dana Example"
+    assert dana["chat_title"] == "Dana Example"
+
+
+async def test_search_results_carry_names(client):
+    async with client:
+        result = await client.call_tool("search_messages", {"query": "dice"})
+
+    assert structured(result)["items"][0]["name"] == "Alice Example"
+
+
+async def test_untrusted_notice_is_in_structured_content_and_comes_first(client):
+    async with client:
+        result = await client.call_tool("get_messages", {"chat_guid": ALICE_CHAT})
+
+    body = structured(result)
+    assert body["notice"] == server.UNTRUSTED_NOTICE
+    assert next(iter(body)) == "notice"
+    assert body["untrusted_content"] is True
+
+
+async def test_results_without_message_text_carry_no_notice(client):
+    async with client:
+        result = await client.call_tool("get_participants", {"chat_guid": GROUP_CHAT})
+
+    assert "notice" not in structured(result)

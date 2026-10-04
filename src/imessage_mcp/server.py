@@ -65,8 +65,9 @@ true total and says "Showing 1-20 of 137" when more matched than were
 returned. Never report a page as the whole answer: say how many matched, and
 ask for the rest before counting or summarizing.
 
-Names are resolved from this Mac's address book before results are returned. A
-bare phone number or email address in a result means no contact matched it.
+Every handle in a result comes with the contact's `name`, resolved from this
+Mac's address book, and every conversation with a `title`. A `name` of null, or
+a bare phone number or email address in text, means no contact matched it.
 Report that handle as it stands, or resolve it with a contacts tool if one is
 available -- never guess whose it is.
 
@@ -126,6 +127,42 @@ def _error_result(message: str) -> ToolResult:
     return ToolResult(content=message, structured_content={"error": message})
 
 
+def _name(entry: dict, resolver: ContactResolver) -> str | None:
+    """The contact name for the handle on ``entry``; None for me or a stranger."""
+    if entry.get("is_from_me"):
+        return None
+    return resolver.name_for(entry.get("handle"))
+
+
+def _with_names(entry: dict, resolver: ContactResolver) -> dict:
+    """A copy of ``entry`` with a contact name beside every handle in it.
+
+    A message gets its sender's ``name``, and so do the message it replied to
+    and each reaction. A conversation gets its ``title`` and its
+    ``participants`` by name in place of bare handles; a message that carries
+    the conversation it arrived in, as unread messages do, gets only that
+    conversation's ``chat_title``, since repeating the membership on every
+    message would cost more than it says.
+    """
+    named = dict(entry)
+    if "handle" in entry:
+        named["name"] = _name(entry, resolver)
+    if entry.get("reply_to"):
+        named["reply_to"] = _with_names(entry["reply_to"], resolver)
+    if entry.get("reactions"):
+        named["reactions"] = [_with_names(r, resolver) for r in entry["reactions"]]
+    if "handles" in entry:
+        handles = named.pop("handles")
+        if "handle" in entry:
+            named["chat_title"] = chat_title(entry, resolver)
+        else:
+            named["title"] = chat_title(entry, resolver)
+            named["participants"] = [
+                {"handle": h, "name": resolver.name_for(h)} for h in handles
+            ]
+    return named
+
+
 def _result(
     items: list[dict],
     text: str,
@@ -133,28 +170,42 @@ def _result(
     offset: int,
     limit: int | None,
     untrusted: bool = False,
+    resolver: ContactResolver | None = None,
 ) -> ToolResult:
     """Text for the model to read, plus the same data as structured content.
+
+    The two halves must each stand alone. Some clients give the model only the
+    structured half -- the claude.ai connector does -- so anything said only in
+    the text never reaches it. That is how a group of people who are all in the
+    address book came to be shown as four bare phone numbers.
 
     Pagination is done in SQL rather than by slicing a full result set, so
     ``items`` is already the page and ``total`` is counted separately.
 
     ``untrusted`` marks a result that carries message text, which is written by
-    other people and is never an instruction.
+    other people and is never an instruction. ``resolver`` names the handles in
+    the structured half; the text half was named when it was formatted.
     """
     if total > len(items) and items:
         first = offset + 1
         text = f"Showing {first}-{offset + len(items)} of {total}\n\n{text}"
-    structured = {
-        "items": json.loads(json.dumps(items, default=str)),
-        "count": len(items),
-        "total": total,
-        "offset": offset,
-        "limit": limit,
-    }
+    if resolver is not None:
+        items = [_with_names(item, resolver) for item in items]
+    structured: dict = {}
     if untrusted:
         text = f"{UNTRUSTED_NOTICE}\n\n{text}"
+        # First, so it is read before the items it is about.
+        structured["notice"] = UNTRUSTED_NOTICE
         structured["untrusted_content"] = True
+    structured.update(
+        {
+            "items": json.loads(json.dumps(items, default=str)),
+            "count": len(items),
+            "total": total,
+            "offset": offset,
+            "limit": limit,
+        }
+    )
     return ToolResult(content=text, structured_content=structured)
 
 
@@ -255,7 +306,9 @@ async def list_chats(
     text = format_chats(chats, resolver)
     if contact is not None and not chats:
         text = f"No conversations found with '{contact}'."
-    return _result(chats, text, total, offset, limit, untrusted=True)
+    return _result(
+        chats, text, total, offset, limit, untrusted=True, resolver=resolver
+    )
 
 
 @mcp.tool
@@ -297,6 +350,7 @@ async def get_messages(chat_guid: str, limit: int = 50, offset: int = 0) -> Tool
         offset,
         limit,
         untrusted=True,
+        resolver=resolver,
     )
 
 
@@ -345,7 +399,9 @@ async def search_messages(
     text = format_messages(matches, resolver)
     if not matches:
         text = f"No messages matching '{query}'."
-    return _result(matches, text, total, offset, limit, untrusted=True)
+    return _result(
+        matches, text, total, offset, limit, untrusted=True, resolver=resolver
+    )
 
 
 @mcp.tool
@@ -370,6 +426,7 @@ async def get_participants(chat_guid: str) -> ToolResult:
         len(participants),
         0,
         None,
+        resolver=resolver,
     )
 
 
@@ -405,7 +462,9 @@ async def get_unread(limit: int = 50) -> ToolResult:
 
     resolver = _resolver_for_now()
     text = format_unread(unread, resolver)
-    return _result(unread, text, total, 0, limit, untrusted=True)
+    return _result(
+        unread, text, total, 0, limit, untrusted=True, resolver=resolver
+    )
 
 
 @mcp.tool

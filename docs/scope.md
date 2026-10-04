@@ -104,6 +104,12 @@ Reads return a FastMCP `ToolResult` carrying both a text channel and `structured
 servers do. Errors return an error result, never a raised exception — a raised exception reaches
 the model as an opaque failure it cannot act on.
 
+Each half has to stand alone, because a client may show the model only one of them. The claude.ai
+connector passes on the structured half and drops the text, so names that lived only in the
+formatted text never arrived: a group whose members were all in the address book came through as
+four bare phone numbers. The structured half therefore carries a `name` beside every handle, a
+`title` for every conversation, and the untrusted-content notice itself, not just a flag.
+
 Search cannot be pushed into SQL. The text lives in a binary blob, so `WHERE text LIKE ?` matches
 almost nothing — rows have to be fetched and decoded before matching. The reference implementation
 responds to this by capping search at the 5,000 most recent messages. **Do not copy that cap.**
