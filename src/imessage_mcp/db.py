@@ -24,6 +24,13 @@ CONVERSATION_ONLY = (
     "m.item_type = 0 AND m.associated_message_type = 0 AND m.is_system_message = 0"
 )
 
+# chat.is_filtered says which list Messages shows a conversation in: 0 the main
+# list, 1 Unknown Senders, 2 Junk. Junk is left out of the default views, as it
+# is in Messages; Unknown Senders is kept, but labeled, because on a real
+# database it held 710 of 1,197 conversations, many of them wanted.
+NOT_JUNK = "c.is_filtered IS NOT 2"
+_FILTER_LABELS = {1: "unknown sender", 2: "junk"}
+
 _MESSAGE_COLUMNS = """
     m.ROWID AS rowid, m.guid, m.text, m.attributedBody, m.is_from_me, m.date,
     m.is_read, m.cache_has_attachments, m.service, h.id AS handle
@@ -157,12 +164,13 @@ def list_chats(
 
     ``guids`` restricts the result to those conversations, keeping the same
     ordering. An empty list means nothing matched and returns nothing, which is
-    different from ``None`` meaning no filter at all.
+    different from ``None`` meaning every conversation outside Junk. Junk is
+    reachable only by asking for it by guid, the way a contact search does.
     """
     if guids is not None and not guids:
         return []
 
-    restrict = ""
+    restrict = f"WHERE {NOT_JUNK}"
     params: list = []
     if guids is not None:
         restrict = f"WHERE c.guid IN ({','.join('?' * len(guids))})"
@@ -172,7 +180,7 @@ def list_chats(
     rows = conn.execute(
         f"""
         SELECT c.guid, c.chat_identifier, c.display_name, c.service_name,
-               MAX(j.message_date) AS last_date,
+               c.is_filtered, MAX(j.message_date) AS last_date,
                (SELECT COUNT(*)
                   FROM message m
                   JOIN chat_message_join j2 ON j2.message_id = m.ROWID
@@ -205,6 +213,7 @@ def list_chats(
             "last_activity": to_iso(row["last_date"]),
             "unread_count": row["unread_count"],
             "last_message": previews.get(row["last_message_id"]),
+            "filtered": _FILTER_LABELS.get(row["is_filtered"]),
         }
         for row in rows
     ]
@@ -243,7 +252,7 @@ def count_chats(
     """Chats that have at least one message, matching what list_chats returns."""
     if guids is not None and not guids:
         return 0
-    restrict = ""
+    restrict = f"WHERE {NOT_JUNK}"
     params: list = []
     if guids is not None:
         restrict = f"WHERE c.guid IN ({','.join('?' * len(guids))})"
@@ -260,9 +269,18 @@ def count_chats(
     return row["n"]
 
 
+# Messages hides attachments it keeps for its own use, chiefly the
+# `.pluginPayloadAttachment` data behind a link preview. They are not anything
+# anybody sent, and on a real database they were 6,526 of 14,101 rows.
+VISIBLE_ATTACHMENT = "a.hide_attachment = 0"
+
+
 def count_attachments(conn: sqlite3.Connection, chat_guid: str | None = None) -> int:
-    where = "WHERE c.guid = ?" if chat_guid else ""
-    params = [chat_guid] if chat_guid else []
+    where = f"WHERE {VISIBLE_ATTACHMENT}"
+    params = []
+    if chat_guid:
+        where += " AND c.guid = ?"
+        params.append(chat_guid)
     row = conn.execute(
         f"""
         SELECT COUNT(*) AS n
@@ -335,28 +353,30 @@ UNREAD_ONLY = (
 
 
 def count_unread(conn: sqlite3.Connection) -> int:
-    """Every unread message, not just the ones a limit would return."""
+    """Every unread message outside Junk, not just the ones a limit would return."""
     row = conn.execute(
         f"""
         SELECT COUNT(*) AS n
           FROM message m
           JOIN chat_message_join j ON j.message_id = m.ROWID
-         WHERE {UNREAD_ONLY}
+          JOIN chat c ON c.ROWID = j.chat_id
+         WHERE {UNREAD_ONLY} AND {NOT_JUNK}
         """
     ).fetchone()
     return row["n"]
 
 
 def get_unread(conn: sqlite3.Connection, limit: int = 50) -> list[dict]:
-    """Received messages that have not been read, newest first."""
+    """Received messages outside Junk that have not been read, newest first."""
     rows = conn.execute(
         f"""
-        SELECT {_MESSAGE_COLUMNS}, c.guid AS chat_guid, c.display_name
+        SELECT {_MESSAGE_COLUMNS}, c.guid AS chat_guid, c.display_name,
+               c.is_filtered
           FROM message m
           JOIN chat_message_join j ON j.message_id = m.ROWID
           JOIN chat c ON c.ROWID = j.chat_id
           LEFT JOIN handle h ON h.ROWID = m.handle_id
-         WHERE {UNREAD_ONLY}
+         WHERE {UNREAD_ONLY} AND {NOT_JUNK}
          ORDER BY m.date DESC
          LIMIT ?
         """,
@@ -367,6 +387,7 @@ def get_unread(conn: sqlite3.Connection, limit: int = 50) -> list[dict]:
             **_message_row(row),
             "chat_guid": row["chat_guid"],
             "display_name": row["display_name"],
+            "filtered": _FILTER_LABELS.get(row["is_filtered"]),
         }
         for row in rows
     ]
@@ -379,8 +400,11 @@ def get_attachments(
     offset: int = 0,
 ) -> list[dict]:
     """Attachment metadata. The files themselves are deliberately not read."""
-    where = "WHERE c.guid = ?" if chat_guid else ""
-    params: list = [chat_guid] if chat_guid else []
+    where = f"WHERE {VISIBLE_ATTACHMENT}"
+    params: list = []
+    if chat_guid:
+        where += " AND c.guid = ?"
+        params.append(chat_guid)
     params += [limit, offset]
     rows = conn.execute(
         f"""

@@ -55,6 +55,23 @@ def test_falls_back_to_text_column():
     assert message_text("legacy text", attributed_body("")) == "legacy text"
 
 
+def test_attachment_placeholder_is_not_text():
+    """An attachment-only message decodes to a lone U+FFFC, not to an empty string."""
+    assert message_text(None, attributed_body("￼")) is None
+    assert message_text(None, attributed_body("￼￼")) is None
+    assert message_text(None, attributed_body("�")) is None
+
+
+def test_attachment_placeholder_is_removed_from_a_caption():
+    assert message_text(None, attributed_body("￼\nLook at this")) == "Look at this"
+    assert message_text(None, attributed_body("before ￼ after")) == "before  after"
+
+
+def test_attachment_placeholder_is_removed_from_the_text_column():
+    assert message_text("￼", None) is None
+    assert message_text("￼old caption", None) == "old caption"
+
+
 def test_no_text_anywhere():
     assert message_text(None, None) is None
     assert message_text("", None) is None

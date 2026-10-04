@@ -12,7 +12,7 @@ from fastmcp import Client
 
 from imessage_mcp import server
 
-from .support.synthetic_db import ALICE, DANA_EMAIL, GROUP_NAME
+from .support.synthetic_db import ALICE, DANA_EMAIL, GROUP_NAME, SPAMMER, STRANGER
 
 ALICE_CHAT = f"iMessage;-;{ALICE}"
 GROUP_CHAT = "iMessage;+;chat999"
@@ -76,16 +76,26 @@ async def test_list_chats_returns_text_and_structure(client):
         result = await client.call_tool("list_chats", {})
 
     body = structured(result)
-    assert body["total"] == 4
-    assert body["count"] == 4
+    assert body["total"] == 5
+    assert body["count"] == 5
     assert {chat["chat_guid"] for chat in body["items"]} == {
         ALICE_CHAT,
         GROUP_CHAT,
         f"iMessage;-;{DANA_EMAIL}",
         f"iMessage;-;+15125550102",
+        f"SMS;-;{STRANGER}",
     }
     assert "Alice Example" in text(result)
     assert GROUP_NAME in text(result)
+    assert f"{STRANGER} [unknown sender]" in text(result)
+
+
+async def test_contact_filter_reaches_junk_and_says_so(client):
+    async with client:
+        result = await client.call_tool("list_chats", {"contact": SPAMMER})
+
+    assert [c["filtered"] for c in structured(result)["items"]] == ["junk"]
+    assert "[junk]" in text(result)
 
 
 async def test_list_chats_pagination_reports_the_true_total(client):
@@ -94,9 +104,9 @@ async def test_list_chats_pagination_reports_the_true_total(client):
 
     body = structured(result)
     assert body["count"] == 2
-    assert body["total"] == 4
+    assert body["total"] == 5
     assert body["limit"] == 2
-    assert "Showing 1-2 of 4" in text(result)
+    assert "Showing 1-2 of 5" in text(result)
 
 
 async def test_get_messages_reads_a_conversation(client):
@@ -170,8 +180,10 @@ async def test_unread(client):
         result = await client.call_tool("get_unread", {})
 
     body = structured(result)
-    assert body["count"] == 2
+    assert body["count"] == 3
     assert all(item["is_from_me"] is False for item in body["items"])
+    assert f"{STRANGER} [unknown sender]:" in text(result)
+    assert "won a prize" not in text(result)
 
 
 async def test_unread_reports_the_true_total_beyond_the_page(client):
@@ -181,8 +193,8 @@ async def test_unread_reports_the_true_total_beyond_the_page(client):
 
     body = structured(result)
     assert body["count"] == 1
-    assert body["total"] == 2
-    assert "of 2" in text(result)
+    assert body["total"] == 3
+    assert "of 3" in text(result)
 
 
 async def test_attachments_are_metadata_only(client):

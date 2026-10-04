@@ -47,6 +47,8 @@ def chat_title(chat: dict, resolver: ContactResolver | None = None) -> str:
 
 def format_chat(chat: dict, resolver: ContactResolver | None = None) -> str:
     parts = [chat_title(chat, resolver)]
+    if chat.get("filtered"):
+        parts.append(f"[{chat['filtered']}]")
     if chat.get("unread_count"):
         parts.append(f"({chat['unread_count']} unread)")
     lines = [" ".join(parts)]
@@ -66,6 +68,8 @@ def format_chats(chats: list[dict], resolver: ContactResolver | None = None) -> 
 
 def format_message(message: dict, resolver: ContactResolver | None = None) -> str:
     who = "me" if message.get("is_from_me") else _label(message.get("handle"), resolver)
+    if message.get("filtered"):
+        who += f" [{message['filtered']}]"
     when = message.get("date") or "unknown time"
     return f"[{when}] {who}: {_body(message)}"
 

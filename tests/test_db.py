@@ -1,11 +1,13 @@
 from imessage_mcp import db
 
-from .support.synthetic_db import ALICE, BOB, DANA_EMAIL, GROUP_NAME
+from .support.synthetic_db import ALICE, BOB, DANA_EMAIL, GROUP_NAME, SPAMMER, STRANGER
 
 ALICE_CHAT = f"iMessage;-;{ALICE}"
 BOB_CHAT = f"iMessage;-;{BOB}"
 GROUP_CHAT = "iMessage;+;chat999"
 DANA_CHAT = f"iMessage;-;{DANA_EMAIL}"
+STRANGER_CHAT = f"SMS;-;{STRANGER}"
+JUNK_CHAT = f"SMS;-;{SPAMMER}"
 
 
 def test_connection_is_read_only(conn):
@@ -27,6 +29,7 @@ def test_to_iso():
 def test_list_chats_orders_by_activity(conn):
     chats = db.list_chats(conn)
     assert [c["chat_guid"] for c in chats] == [
+        STRANGER_CHAT,
         DANA_CHAT,
         GROUP_CHAT,
         BOB_CHAT,
@@ -105,14 +108,38 @@ def test_participants(conn):
     ]
 
 
+def test_list_chats_leaves_out_junk_and_labels_unknown_senders(conn):
+    """The junk chat is the most recently active, so it would lead the list."""
+    chats = {c["chat_guid"]: c for c in db.list_chats(conn)}
+    assert JUNK_CHAT not in chats
+    assert db.count_chats(conn) == len(chats)
+    assert chats[STRANGER_CHAT]["filtered"] == "unknown sender"
+    assert chats[DANA_CHAT]["filtered"] is None
+
+
+def test_list_chats_reaches_junk_when_asked_for_by_guid(conn):
+    """A contact search names the chats it wants, and that includes Junk."""
+    chats = db.list_chats(conn, guids=[JUNK_CHAT])
+    assert [c["filtered"] for c in chats] == ["junk"]
+    assert db.count_chats(conn, guids=[JUNK_CHAT]) == 1
+
+
 def test_unread(conn):
     unread = db.get_unread(conn)
     assert [m["text"] for m in unread] == [
+        "Your package is out for delivery",
         "Let me know what you think",
         "Sent you the itinerary",
     ]
     assert all(m["is_from_me"] is False for m in unread)
-    assert unread[0]["chat_guid"] == DANA_CHAT
+    assert unread[0]["chat_guid"] == STRANGER_CHAT
+    assert unread[0]["filtered"] == "unknown sender"
+    assert unread[1]["filtered"] is None
+
+
+def test_unread_leaves_out_junk(conn):
+    assert JUNK_CHAT not in {m["chat_guid"] for m in db.get_unread(conn)}
+    assert db.count_unread(conn) == 3
 
 
 def test_attachments(conn):
@@ -123,6 +150,16 @@ def test_attachments(conn):
     assert attachments[0]["size_bytes"] == 2097152
     assert attachments[0]["is_outgoing"] is True
     assert db.get_attachments(conn, chat_guid=ALICE_CHAT) == []
+
+
+def test_attachments_leave_out_hidden_link_preview_data(conn):
+    """Alice's chat holds only a hidden .pluginPayloadAttachment."""
+    assert all(
+        not a["name"].endswith(".pluginPayloadAttachment")
+        for a in db.get_attachments(conn)
+    )
+    assert db.count_attachments(conn) == 1
+    assert db.count_attachments(conn, chat_guid=ALICE_CHAT) == 0
 
 
 def test_search_finds_across_chats(conn):

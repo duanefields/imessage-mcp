@@ -27,6 +27,9 @@ ALICE = "+15125550101"
 BOB = "+15125550102"
 CAROL = "+15125550103"
 DANA_EMAIL = "dana@example.com"
+# Not in any address book: one lands in Unknown Senders, the other in Junk.
+STRANGER = "+15125550104"
+SPAMMER = "+15125550105"
 
 GROUP_NAME = "Game Night"
 
@@ -50,45 +53,52 @@ def build(path: str | pathlib.Path) -> sqlite3.Connection:
         (2, BOB, "iMessage"),
         (3, CAROL, "SMS"),
         (4, DANA_EMAIL, "iMessage"),
+        (5, STRANGER, "SMS"),
+        (6, SPAMMER, "SMS"),
     ]
     conn.executemany(
         "INSERT INTO handle (ROWID, id, service) VALUES (?, ?, ?)", handles
     )
 
+    # The last column is is_filtered: 0 the main list, 1 Unknown Senders, 2 Junk.
     chats = [
-        (1, f"iMessage;-;{ALICE}", ALICE, "iMessage", None),
-        (2, f"iMessage;-;{BOB}", BOB, "iMessage", None),
-        (3, "iMessage;+;chat999", "chat999", "iMessage", GROUP_NAME),
-        (4, f"iMessage;-;{DANA_EMAIL}", DANA_EMAIL, "iMessage", None),
+        (1, f"iMessage;-;{ALICE}", ALICE, "iMessage", None, 0),
+        (2, f"iMessage;-;{BOB}", BOB, "iMessage", None, 0),
+        (3, "iMessage;+;chat999", "chat999", "iMessage", GROUP_NAME, 0),
+        (4, f"iMessage;-;{DANA_EMAIL}", DANA_EMAIL, "iMessage", None, 0),
+        (5, f"SMS;-;{STRANGER}", STRANGER, "SMS", None, 1),
+        (6, f"SMS;-;{SPAMMER}", SPAMMER, "SMS", None, 2),
     ]
     conn.executemany(
-        "INSERT INTO chat (ROWID, guid, chat_identifier, service_name, display_name)"
-        " VALUES (?, ?, ?, ?, ?)",
+        "INSERT INTO chat (ROWID, guid, chat_identifier, service_name, display_name,"
+        " is_filtered) VALUES (?, ?, ?, ?, ?, ?)",
         chats,
     )
 
     conn.executemany(
         "INSERT INTO chat_handle_join (chat_id, handle_id) VALUES (?, ?)",
-        [(1, 1), (2, 2), (3, 1), (3, 2), (3, 3), (4, 4)],
+        [(1, 1), (2, 2), (3, 1), (3, 2), (3, 3), (4, 4), (5, 5), (6, 6)],
     )
 
     # (rowid, chat, handle, from_me, minutes, body, use_blob, is_read)
     #
     # `use_blob` False writes the text to the `text` column with no
     # attributedBody, standing in for the old rows that still exist in a long
-    # history. A body of "" is an attachment-only message: the blob is present
-    # and decodes to nothing.
+    # history. A body of "\ufffc" is an attachment-only message: Messages marks
+    # where the attachment sits with that character, and it is the whole body.
     messages = [
         (1, 1, 1, 0, 0, "Are we still on for Saturday?", True, 1),
         (2, 1, 1, 1, 2, "Yes — 7pm works", True, 1),
         (3, 1, 1, 0, 5, "Bringing the good dice 🎲", True, 1),
         (4, 2, 2, 0, 10, "legacy row, text column only", False, 1),
-        (5, 2, 2, 1, 12, "", True, 1),
+        (5, 2, 2, 1, 12, "\ufffc", True, 1),
         (6, 3, 1, 0, 20, "Who's in for Game Night?", True, 1),
         (7, 3, 2, 0, 22, "I'm in", True, 1),
         (8, 3, 0, 1, 25, "Same, see you there", True, 1),
         (9, 4, 4, 0, 30, "Sent you the itinerary", True, 0),
         (10, 4, 4, 0, 31, "Let me know what you think", True, 0),
+        (13, 5, 5, 0, 35, "Your package is out for delivery", True, 0),
+        (14, 6, 6, 0, 40, "You have won a prize, reply YES", True, 0),
     ]
 
     for rowid, chat_id, handle_id, from_me, offset, body, use_blob, is_read in messages:
@@ -163,6 +173,19 @@ def build(path: str | pathlib.Path) -> sqlite3.Connection:
     # The schema here has no triggers -- they call functions only Messages.app
     # registers -- so anything a trigger would maintain has to be set by hand.
     conn.execute("UPDATE message SET cache_has_attachments = 1 WHERE ROWID = 5")
+
+    # A hidden attachment: the link-preview payload Messages stores alongside a
+    # message. On a real database these were 6,526 of 14,101 attachment rows.
+    conn.execute(
+        "INSERT INTO attachment (ROWID, guid, original_guid, filename, uti,"
+        " total_bytes, is_outgoing, transfer_name, hide_attachment)"
+        " VALUES (2, 'ATT-0002', 'ATT-0002',"
+        " '~/Library/Messages/Attachments/cd/SYNTHETIC-0003.pluginPayloadAttachment',"
+        " 'dyn.synthetic', 4096, 0, 'SYNTHETIC-0003.pluginPayloadAttachment', 1)"
+    )
+    conn.execute(
+        "INSERT INTO message_attachment_join (message_id, attachment_id) VALUES (3, 2)"
+    )
 
     conn.commit()
     return conn
