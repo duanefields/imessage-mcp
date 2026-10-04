@@ -11,6 +11,7 @@ from .contacts import ContactResolver
 NO_TEXT = "[no text]"
 ATTACHMENT_ONLY = "[attachment]"
 UNSENT = "[unsent]"
+VOICE_MESSAGE = "[voice message]"
 
 # An unnamed group is titled by its members, and a large one would otherwise
 # put its whole membership in every listing.
@@ -27,6 +28,8 @@ def _label(handle: str | None, resolver: ContactResolver | None) -> str:
 
 def _body(message: dict) -> str:
     text = message.get("text")
+    if message.get("voice_message"):
+        return f"{VOICE_MESSAGE} {text}" if text else VOICE_MESSAGE
     if text:
         return text
     if message.get("unsent"):

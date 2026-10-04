@@ -40,6 +40,31 @@ def decode_attributed_body(blob: bytes | None) -> str | None:
     return None
 
 
+_TRANSCRIPTION_KEY = b"IMAudioTranscription"
+
+
+def decode_transcription(blob: bytes | None) -> str | None:
+    """Return the transcript of a voice message held in ``blob``, or ``None``.
+
+    The body of a voice message is only an attachment placeholder. Since iOS 17
+    Messages transcribes the audio and stores the transcript as the value of an
+    ``IMAudioTranscription`` attribute, so it is the string that follows that
+    key in the archive. Checked against a real voice message on macOS 26.
+    """
+    # A substring test is far cheaper than parsing, and almost no blob has it.
+    if not blob or _TRANSCRIPTION_KEY not in blob:
+        return None
+    try:
+        strings = (e for e in TypedStreamReader.from_data(blob) if isinstance(e, bytes))
+        for event in strings:
+            if event == _TRANSCRIPTION_KEY:
+                value = next(strings, None)
+                return value.decode("utf-8", errors="replace") if value else None
+    except Exception:
+        logger.debug("could not decode transcription", exc_info=True)
+    return None
+
+
 # Messages marks where an attachment sits in the body with U+FFFC and where an
 # app balloon sits with U+FFFD. An attachment-only message is not empty: its
 # text is a lone U+FFFC. Measured on a real database, 4,024 messages decoded to
@@ -63,9 +88,14 @@ def message_text(text: str | None, attributed_body: bytes | None) -> str | None:
     The blob wins over the column. A message can carry both, and when it does
     the blob is the one Messages renders. Attachment placeholders are removed
     from either, so an attachment-only message has no text rather than an
-    invisible character.
+    invisible character. A voice message has nothing but a placeholder, so its
+    transcript stands in as its text, which is also what makes it searchable.
     """
-    for candidate in (decode_attributed_body(attributed_body), text):
+    for candidate in (
+        decode_attributed_body(attributed_body),
+        text,
+        decode_transcription(attributed_body),
+    ):
         cleaned = _without_placeholders(candidate)
         if cleaned:
             return cleaned

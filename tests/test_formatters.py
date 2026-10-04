@@ -103,6 +103,14 @@ def test_chat_title_of_an_empty_unnamed_group_falls_back_to_its_identifier(resol
     assert formatters.chat_title({"chat_identifier": "chat888", "handles": []}, resolver) == "chat888"
 
 
+def test_format_message_labels_a_voice_message():
+    voice = {"is_from_me": False, "handle": "h", "date": "t", "voice_message": True}
+    assert formatters.format_message({**voice, "text": "on my way"}) == (
+        "[t] h: [voice message] on my way"
+    )
+    assert formatters.format_message({**voice, "text": None}) == "[t] h: [voice message]"
+
+
 def test_format_message_marks_edits_and_unsends():
     edited = {"is_from_me": True, "date": "t", "text": "7pm", "edited_at": "t2"}
     assert formatters.format_message(edited) == "[t] me: 7pm (edited)"

@@ -33,6 +33,7 @@ STRANGER = "+15125550104"
 SPAMMER = "+15125550105"
 
 GROUP_NAME = "Game Night"
+VOICE_TRANSCRIPT = "Running ten minutes late, save me a seat"
 
 
 def apple_time(when: datetime.datetime) -> int:
@@ -212,6 +213,21 @@ def build(path: str | pathlib.Path) -> sqlite3.Connection:
         "INSERT INTO chat_message_join (chat_id, message_id, message_date)"
         " VALUES (2, 20, ?)",
         (apple_time(unsent_at),),
+    )
+
+    # Bob sent a voice message. Its body is only the attachment placeholder; the
+    # transcript Messages made of it is an attribute on that placeholder.
+    voice_at = _minutes(13)
+    conn.execute(
+        "INSERT INTO message (ROWID, guid, attributedBody, handle_id, is_from_me,"
+        " is_read, date, service, is_finished, is_audio_message, cache_has_attachments)"
+        " VALUES (21, 'SYNTHETIC-0021', ?, 2, 0, 1, ?, 'iMessage', 1, 1, 1)",
+        (attributed_body("\ufffc", VOICE_TRANSCRIPT), apple_time(voice_at)),
+    )
+    conn.execute(
+        "INSERT INTO chat_message_join (chat_id, message_id, message_date)"
+        " VALUES (2, 21, ?)",
+        (apple_time(voice_at),),
     )
 
     # Bob's "I'm in" is a reply in a thread started by Alice's question.

@@ -1,6 +1,10 @@
 import pytest
 
-from imessage_mcp.attributed import decode_attributed_body, message_text
+from imessage_mcp.attributed import (
+    decode_attributed_body,
+    decode_transcription,
+    message_text,
+)
 
 from .support.typedstream_writer import attributed_body
 
@@ -70,6 +74,27 @@ def test_attachment_placeholder_is_removed_from_a_caption():
 def test_attachment_placeholder_is_removed_from_the_text_column():
     assert message_text("￼", None) is None
     assert message_text("￼old caption", None) == "old caption"
+
+
+def test_transcription_is_read_from_its_attribute():
+    blob = attributed_body("\ufffc", "Picking up milk on the way home")
+    assert decode_transcription(blob) == "Picking up milk on the way home"
+
+
+def test_a_blob_without_a_transcription_has_none():
+    assert decode_transcription(attributed_body("hello")) is None
+    assert decode_transcription(None) is None
+    assert decode_transcription(b"IMAudioTranscription but not a typedstream") is None
+
+
+def test_a_voice_message_reads_as_its_transcript():
+    """Its body is only a placeholder, so the transcript is all the text it has."""
+    blob = attributed_body("\ufffc", "Picking up milk on the way home")
+    assert message_text(None, blob) == "Picking up milk on the way home"
+
+
+def test_a_voice_message_not_yet_transcribed_has_no_text():
+    assert message_text(None, attributed_body("\ufffc", "")) is None
 
 
 def test_no_text_anywhere():

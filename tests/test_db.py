@@ -1,6 +1,14 @@
 from imessage_mcp import db
 
-from .support.synthetic_db import ALICE, BOB, DANA_EMAIL, GROUP_NAME, SPAMMER, STRANGER
+from .support.synthetic_db import (
+    ALICE,
+    BOB,
+    DANA_EMAIL,
+    GROUP_NAME,
+    SPAMMER,
+    STRANGER,
+    VOICE_TRANSCRIPT,
+)
 
 ALICE_CHAT = f"iMessage;-;{ALICE}"
 BOB_CHAT = f"iMessage;-;{BOB}"
@@ -141,6 +149,20 @@ def test_an_unsent_message_is_not_called_edited(conn):
     assert unsent["edited_at"] is None
 
 
+def test_a_voice_message_carries_its_transcript(conn):
+    messages = {m["guid"]: m for m in db.get_messages(conn, BOB_CHAT)}
+    voice = messages["SYNTHETIC-0021"]
+    assert voice["voice_message"] is True
+    assert voice["text"] == VOICE_TRANSCRIPT
+    assert messages["SYNTHETIC-0004"]["voice_message"] is False
+
+
+def test_search_finds_words_spoken_in_a_voice_message(conn):
+    matches, total = db.search_messages(conn, "save me a seat")
+    assert total == 1
+    assert matches[0]["guid"] == "SYNTHETIC-0021"
+
+
 def test_list_chats_carries_handles(conn):
     chats = {c["chat_guid"]: c for c in db.list_chats(conn)}
     assert sorted(chats[GROUP_CHAT]["handles"]) == sorted([ALICE, BOB, "+15125550103"])
@@ -161,10 +183,10 @@ def test_get_messages_reads_legacy_text_column(conn):
 
 
 def test_get_messages_attachment_only_has_no_text(conn):
-    messages = db.get_messages(conn, BOB_CHAT)
-    attachment_only = [m for m in messages if m["has_attachments"]]
-    assert len(attachment_only) == 1
-    assert attachment_only[0]["text"] is None
+    messages = {m["guid"]: m for m in db.get_messages(conn, BOB_CHAT)}
+    attachment_only = messages["SYNTHETIC-0005"]
+    assert attachment_only["has_attachments"] is True
+    assert attachment_only["text"] is None
 
 
 def test_pagination(conn):

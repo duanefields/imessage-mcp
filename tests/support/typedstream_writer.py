@@ -29,6 +29,7 @@ _REF_TYPE_OBJECT = b"\x92"  # -> shared string "@"
 _REF_CLASS_NSOBJECT = b"\x94"
 
 _ATTRIBUTE_NAME = b"__kIMMessagePartAttributeName"
+_TRANSCRIPTION_NAME = b"IMAudioTranscription"
 
 
 def _signed_int(value: int) -> bytes:
@@ -63,8 +64,19 @@ def _class(name: bytes, version: int) -> bytes:
     return b"\x84" + _shared_string(name) + _signed_int(version)
 
 
-def attributed_body(text: str) -> bytes:
-    """Return an ``attributedBody`` blob carrying ``text``."""
+def _string_object(raw: bytes) -> bytes:
+    """An NSString, by reference to the class and type string emitted earlier."""
+    return _REF_TYPE_OBJECT + b"\x84\x96" + b"\x96" + _length(len(raw)) + raw + b"\x86"
+
+
+def attributed_body(text: str, transcription: str | None = None) -> bytes:
+    """Return an ``attributedBody`` blob carrying ``text``.
+
+    ``transcription`` adds the ``IMAudioTranscription`` attribute a voice
+    message carries, holding the transcript as an NSString. On a real voice
+    message it sits beside a file-transfer guid and a writing direction; those
+    are left out, and it goes last so that no reference above it moves.
+    """
     raw = text.encode("utf-8")
 
     out = bytearray()
@@ -84,21 +96,24 @@ def attributed_body(text: str) -> bytes:
     # not characters, which is why it is measured on the encoded form.
     out += _shared_string(b"iI") + _signed_int(1) + _signed_int(len(raw))
 
-    # NSDictionary : NSObject, holding one entry.
+    # NSDictionary : NSObject, holding one entry, or two with a transcription.
     out += _REF_TYPE_OBJECT
     out += b"\x84" + _class(b"NSDictionary", 0) + _REF_CLASS_NSOBJECT
-    out += _shared_string(b"i") + _signed_int(1)
+    out += _shared_string(b"i") + _signed_int(2 if transcription is not None else 1)
 
     # Key: an NSString, by reference to the class emitted above.
-    out += _REF_TYPE_OBJECT + b"\x84\x96"
-    out += b"\x96" + _length(len(_ATTRIBUTE_NAME)) + _ATTRIBUTE_NAME
-    out += b"\x86"
+    out += _string_object(_ATTRIBUTE_NAME)
 
     # Value: NSNumber : NSValue : NSObject, wrapping the integer 0.
     out += _REF_TYPE_OBJECT
     out += b"\x84" + _class(b"NSNumber", 0) + _class(b"NSValue", 0) + _REF_CLASS_NSOBJECT
     out += _shared_string(b"*") + b"\x84\x99"
     out += b"\x99" + _signed_int(0)
+    out += b"\x86"
 
-    out += b"\x86\x86\x86"
+    if transcription is not None:
+        out += _string_object(_TRANSCRIPTION_NAME)
+        out += _string_object(transcription.encode("utf-8"))
+
+    out += b"\x86\x86"
     return bytes(out)

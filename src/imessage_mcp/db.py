@@ -35,7 +35,7 @@ _FILTER_LABELS = {1: "unknown sender", 2: "junk"}
 _MESSAGE_COLUMNS = """
     m.ROWID AS rowid, m.guid, m.text, m.attributedBody, m.is_from_me, m.date,
     m.is_read, m.cache_has_attachments, m.service, m.thread_originator_guid,
-    m.date_edited, m.message_summary_info, h.id AS handle
+    m.date_edited, m.message_summary_info, m.is_audio_message, h.id AS handle
 """
 
 
@@ -137,6 +137,8 @@ def _message_row(row: sqlite3.Row) -> dict:
         "unsent": unsent,
         "is_read": bool(row["is_read"]),
         "has_attachments": bool(row["cache_has_attachments"]),
+        # Its text, when there is any, is the transcript Messages made of it.
+        "voice_message": bool(row["is_audio_message"]),
         "service": row["service"],
         "handle": row["handle"],
         # Just the guid until add_reply_context fills in who said what.

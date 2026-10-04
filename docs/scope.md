@@ -132,7 +132,10 @@ An edited message is marked as such. Its text is already the latest version -- M
 `attributedBody` on each edit -- so marking it needs only `date_edited`. Unsending stamps
 `date_edited` too, leaving the row with no text; the retracted-parts list (`rp`) in
 `message_summary_info` tells the two apart, and such a message reads `[unsent]`. An unnamed
-group is titled by up to three of its members rather than its opaque `chat…` identifier.
+group is titled by up to three of its members rather than its opaque `chat…` identifier. A
+voice message's body is only an attachment placeholder; its text is the transcript Messages stores
+in an `IMAudioTranscription` attribute (iOS 17 and later), so it reads as `[voice message] …` and
+is found by search. Older voice messages have no transcript and read as `[voice message]`.
 
 The edit history itself -- the earlier versions held under `ec` in `message_summary_info` -- is
 deliberately not returned. An edit exists to correct a typo or fill in something missing, so the
