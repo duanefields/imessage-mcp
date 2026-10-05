@@ -10,7 +10,7 @@ import json
 import pytest
 from fastmcp import Client
 
-from imessage_mcp import server
+from imessage_mcp import applescript, server
 
 from .support.synthetic_db import ALICE, DANA_EMAIL, GROUP_NAME, SPAMMER, STRANGER
 
@@ -227,6 +227,20 @@ async def test_structured_content_is_json_serializable(client):
     json.dumps(structured(result))
 
 
+async def _get_health(monkeypatch, db_path, messages_running=True):
+    import httpx
+
+    monkeypatch.setenv("IMESSAGE_MCP_DB_PATH", str(db_path))
+    monkeypatch.setattr(server, "messages_is_running", lambda: messages_running)
+    app = server.mcp.http_app()
+
+    async with httpx.AsyncClient(
+        transport=httpx.ASGITransport(app=app), base_url="http://testserver"
+    ) as client:
+        async with app.router.lifespan_context(app):
+            return await client.get("/health")
+
+
 async def test_health_reports_liveness_and_the_interpreter(monkeypatch, chat_db_path):
     """The interpreter path is on the health check for a reason.
 
@@ -234,16 +248,7 @@ async def test_health_reports_liveness_and_the_interpreter(monkeypatch, chat_db_
     patch upgrade moves it and silently voids the grant. The service then hangs
     on its next restart with an empty log. This field is the early warning.
     """
-    import httpx
-
-    monkeypatch.setenv("IMESSAGE_MCP_DB_PATH", str(chat_db_path))
-    app = server.mcp.http_app()
-
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://testserver"
-    ) as client:
-        async with app.router.lifespan_context(app):
-            response = await client.get("/health")
+    response = await _get_health(monkeypatch, chat_db_path)
 
     assert response.status_code == 200
     body = response.json()
@@ -253,20 +258,11 @@ async def test_health_reports_liveness_and_the_interpreter(monkeypatch, chat_db_
     assert body["python"].endswith(("python", "python3", "python3.12", "python3.13"))
 
 
-async def test_health_reports_degraded_when_the_database_is_gone(monkeypatch, tmp_path):
-    import httpx
-
-    monkeypatch.setenv("IMESSAGE_MCP_DB_PATH", str(tmp_path / "absent.db"))
-    app = server.mcp.http_app()
-
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://testserver"
-    ) as client:
-        async with app.router.lifespan_context(app):
-            response = await client.get("/health")
+async def test_health_names_the_problem_when_the_database_is_gone(monkeypatch, tmp_path):
+    response = await _get_health(monkeypatch, tmp_path / "absent.db")
 
     assert response.status_code == 503
-    assert response.json()["status"] == "degraded"
+    assert response.json()["status"] == "database unreachable"
 
 
 def test_unknown_transport_is_refused(monkeypatch):
@@ -277,28 +273,48 @@ def test_unknown_transport_is_refused(monkeypatch):
         server.main()
 
 
-async def test_health_reports_messages_app_but_stays_healthy_without_it(
-    monkeypatch, chat_db_path
-):
-    """A host where Messages has quit serves every read correctly and drops
-    every send. The server is not unhealthy; the deployment is. So the field is
-    reported and the monitor decides, rather than /health returning 503 for
-    something that does not affect reads at all."""
-    import httpx
+async def test_health_fails_when_messages_is_not_running(monkeypatch, chat_db_path):
+    """Reads keep working without Messages, so nothing else about the server
+    looks wrong -- but every send would be dropped. The monitor only reads the
+    status code, so this has to be a 503."""
+    response = await _get_health(monkeypatch, chat_db_path, messages_running=False)
 
-    monkeypatch.setenv("IMESSAGE_MCP_DB_PATH", str(chat_db_path))
-    monkeypatch.setattr(server, "messages_is_running", lambda: False)
-    app = server.mcp.http_app()
-
-    async with httpx.AsyncClient(
-        transport=httpx.ASGITransport(app=app), base_url="http://testserver"
-    ) as client:
-        async with app.router.lifespan_context(app):
-            response = await client.get("/health")
-
-    assert response.status_code == 200
-    assert response.json()["status"] == "ok"
+    assert response.status_code == 503
+    assert response.json()["status"] == "Messages.app is not running"
     assert response.json()["messages_running"] is False
+
+
+async def test_health_fails_after_a_failed_send(monkeypatch, chat_db_path):
+    """A revoked Apple Events grant leaves Messages running and every read
+    working while every send is dropped. The last send is the only sign."""
+    monkeypatch.setattr(
+        applescript, "last_send",
+        lambda: {"at": None, "ok": False, "action": "send_message", "error": "SendError"},
+    )
+    response = await _get_health(monkeypatch, chat_db_path)
+
+    assert response.status_code == 503
+    assert response.json()["status"] == "last send failed"
+
+
+async def test_health_fails_when_the_interpreter_moves(monkeypatch, chat_db_path):
+    """A uv upgrade repoints the venv's interpreter while this process keeps
+    running on the old one. Flagged now, because after the next restart the
+    service hangs and cannot say anything."""
+    monkeypatch.setattr(server, "_STARTUP_PYTHON", "/elsewhere/bin/python3.12")
+    response = await _get_health(monkeypatch, chat_db_path)
+
+    assert response.status_code == 503
+    assert response.json()["status"] == "interpreter moved, re-grant Full Disk Access"
+
+
+async def test_health_lists_every_problem(monkeypatch, tmp_path):
+    response = await _get_health(monkeypatch, tmp_path / "absent.db", messages_running=False)
+
+    assert response.status_code == 503
+    assert response.json()["status"] == (
+        "database unreachable, Messages.app is not running"
+    )
 
 
 def test_messages_check_does_not_use_apple_events(monkeypatch):

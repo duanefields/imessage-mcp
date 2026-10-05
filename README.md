@@ -106,7 +106,9 @@ the `IMESSAGE_MCP_` prefix.
 reports the resolved interpreter path — a Python patch upgrade silently moves
 the binary and voids the Full Disk Access grant, which is the documented way
 this service dies — along with the newest message in the database, whether
-Messages is running, and the outcome of the last send.
+Messages is running, and the outcome of the last send. It returns 503, with
+the problems named in `status`, when the database is unreachable, Messages is
+not running, the last send failed, or the interpreter has moved.
 
 ## Deployment
 
@@ -114,7 +116,7 @@ Messages is running, and the outcome of the last send.
 privacy prompt that hangs the service if the grant is missing, why it must not
 be a LaunchDaemon, monitoring, and pushing an update.
 
-`scripts/healthcheck.sh` and `scripts/self-update.sh` support that.
+`scripts/self-update.sh` supports that.
 
 ## Development
 

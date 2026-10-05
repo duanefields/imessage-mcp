@@ -286,10 +286,10 @@ def test_a_refusal_is_recorded_as_a_failed_send(monkeypatch):
 
 def test_the_published_failure_never_carries_the_message_text(monkeypatch):
     """The sharpest version of this hazard in the project. /health is
-    unauthenticated and healthcheck.sh forwards it off the host, while the argv
+    unauthenticated and answers anyone who asks, while the argv
     osascript is handed is [chat_guid, text] -- the text being someone's
-    private message. Publishing stderr would send a conversation to a ping
-    service because somebody mistyped a chat guid."""
+    private message. Publishing stderr would hand a conversation to anyone
+    polling the endpoint because somebody mistyped a chat guid."""
     private = "meet me at the safehouse at midnight"
 
     def fake_run(argv, **kw):

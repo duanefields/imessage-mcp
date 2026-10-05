@@ -558,30 +558,40 @@ def _tilde(path: str) -> str:
     return f"~{path[len(home):]}" if home != "/" and path.startswith(home) else path
 
 
+# The interpreter this process started under. `sys.executable` is the venv's
+# symlink, and resolving it follows uv's unversioned alias to whichever patch
+# release is installed now -- so resolving it again later shows an upgrade the
+# moment it lands, while this process is still running on the old one.
+_STARTUP_PYTHON = os.path.realpath(sys.executable)
+
+
 @mcp.custom_route("/health", methods=["GET"])
 async def health(request):
-    """Liveness, plus the two things that actually break this deployment.
+    """Liveness, plus the things that actually break this deployment.
 
     Unauthenticated and public by design, so an uptime monitor can poll it. Do
     not add anything here that would not be safe published -- see `_tilde`.
 
+    The verdict is made here, so the monitor only has to read the status code:
+    200 with `status` "ok", or 503 with `status` naming every problem found,
+    comma-separated. The other fields are there for whoever curls it next.
+
     `python` is reported because Full Disk Access is granted against the
     interpreter's resolved path, and a patch upgrade silently moves it and
     voids the grant. The service then hangs on its next restart with nothing in
-    the log. Watching this field is the early warning. It is reported relative
-    to `~`, which keeps the version-stamped part that carries the warning.
+    the log, so the move is flagged while the old process is still up to say
+    so. It is reported relative to `~`, which keeps the version-stamped part
+    that carries the warning.
 
     `newest_message` distinguishes a working server from one that is serving a
     database Messages has stopped writing to, and `messages_running` catches
     the case where Messages has quit: reads keep working, sends would not.
     """
+    python = os.path.realpath(sys.executable)
     payload = {
         "status": "ok",
-        "python": _tilde(os.path.realpath(sys.executable)),
+        "python": _tilde(python),
         "python_version": platform.python_version(),
-        # Reported, but does not make the server unhealthy: reads work whether
-        # or not Messages is up. It is the monitor's job to decide that a host
-        # which cannot send is a problem worth waking someone for.
         "messages_running": messages_is_running(),
         # The outcome of the last send. `messages_running` does not cover this:
         # a revoked Apple Events grant leaves Messages running and every read
@@ -593,6 +603,7 @@ async def health(request):
         # anywhere else in this project.
         "last_send": _last_send_report(),
     }
+    problems = []
     try:
         conn = db.connect()
         try:
@@ -602,10 +613,21 @@ async def health(request):
         finally:
             conn.close()
     except Exception as exc:
-        payload["status"] = "degraded"
         payload["database"] = f"unreachable: {exc.__class__.__name__}"
-        return JSONResponse(payload, status_code=503)
+        problems.append("database unreachable")
 
+    if not payload["messages_running"]:
+        problems.append("Messages.app is not running")
+    # Only False is a fault. None means nothing has been sent since this
+    # process started, which is the normal state after a restart.
+    if payload["last_send"]["ok"] is False:
+        problems.append("last send failed")
+    if python != _STARTUP_PYTHON:
+        problems.append("interpreter moved, re-grant Full Disk Access")
+
+    if problems:
+        payload["status"] = ", ".join(problems)
+        return JSONResponse(payload, status_code=503)
     return JSONResponse(payload)
 
 

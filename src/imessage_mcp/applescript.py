@@ -59,9 +59,8 @@ def _publishable_failure(exc: Exception) -> str:
     """Describe a send failure in terms safe to serve from ``/health``.
 
     Only the exception's class name, and here that matters more than anywhere
-    else in this project. ``/health`` is unauthenticated and
-    ``scripts/healthcheck.sh`` forwards what it finds to a ping service off the
-    host -- while ``SendError`` carries osascript's stderr, and the argv
+    else in this project. ``/health`` is unauthenticated and answers anyone who
+    asks -- while ``SendError`` carries osascript's stderr, and the argv
     osascript was given is ``[chat_guid, text]``. The text is the message. A
     published message means a private conversation leaves the machine over the
     open internet because somebody mistyped a chat guid.

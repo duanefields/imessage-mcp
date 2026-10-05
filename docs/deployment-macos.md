@@ -112,8 +112,9 @@ Approval is granted against that path. A patch upgrade moves the binary, silentl
 and the service goes back to hanging on startup with no error anywhere. A `.python-version`
 holding only `3.12` permits exactly that upgrade.
 
-`GET /health` reports the resolved interpreter path so the change is visible before it bites.
-`scripts/healthcheck.sh` compares it against `EXPECTED_PYTHON` and fails when it moves.
+`GET /health` reports the resolved interpreter path, and returns 503 the moment it differs from
+the one the process started under, so the change is visible before the next restart makes it
+bite.
 
 ## Contacts need no second permission
 
@@ -164,39 +165,34 @@ The consequence is a rule about the payload, not the routing: **nothing goes in
 it that you would not publish.** The interpreter path is reported because a uv
 upgrade moving it is what silently voids Full Disk Access, but it is reported
 relative to `~`, since the absolute form begins with the operator's account
-name and publishing that buys nothing. `scripts/healthcheck.sh` compares the
-interpreter by resolving it locally, so this costs the check nothing.
+name and publishing that buys nothing. The comparison that matters happens
+inside the server, against the full path, so this costs the check nothing.
 
 ## Monitoring
 
-`scripts/healthcheck.sh` checks a running server and reports to a dead-man's-switch service such
-as healthchecks.io. Configure it in `~/.imessage-mcp/check.env`:
+`/health` makes the call itself, so any HTTP uptime monitor can watch it with no script on the
+host: point it at the public URL, e.g. `https://imessage.example.com/health`, and treat anything
+but a 2xx as down. Uptime Kuma's plain **HTTP(s)** monitor type is enough.
 
-```bash
-HEALTH_URL=http://127.0.0.1:18791/health
-PING_URL=https://hc-ping.com/your-uuid-here
-EXPECTED_PYTHON=/Users/USERNAME/.local/share/uv/python/cpython-3.12.13-.../bin/python3.12
-VENV_PYTHON=/Users/USERNAME/path/to/imessage-mcp/.venv/bin/python
-MAX_QUIET_SECONDS=0   # staleness check off; see below
-```
+It answers 200 with `"status": "ok"`, or 503 with `status` naming every problem it found,
+comma-separated:
 
-Expand `$REPO` and `~` yourself; cron does neither.
-
-```cron
-*/10 * * * * $REPO/scripts/healthcheck.sh >> ~/.imessage-mcp/check.log 2>&1
-```
-
-`chmod 600` the config: the ping URL is a capability, not just an address.
-
-It reports failure on three things:
-
-- **No response.** Either down, or hung on a permission prompt. A timeout is meaningful here,
-  since the documented failure mode is a hang rather than a crash.
-- **The database is unreachable.** `/health` returns 503 and says so.
-- **Messages.app is not running.** Reads keep working, so nothing else looks wrong, but sending
+- **`database unreachable`**. Full Disk Access is missing or the database has moved.
+- **`Messages.app is not running`**. Reads keep working, so nothing else looks wrong, but sending
   would fail. The host should be set to launch Messages at login.
-- **The interpreter moved.** The early warning for the privacy-approval problem above. Re-grant
-  Full Disk Access and update `EXPECTED_PYTHON` together.
+- **`last send failed`**. The Apple Events grant for Messages may have been revoked: Messages is
+  running and every read works while every send is dropped. Cleared by the next successful send
+  or a restart.
+- **`interpreter moved, re-grant Full Disk Access`**. The early warning for the privacy-approval
+  problem above, raised while the old process is still up to report it.
+
+A monitor alert only says 503; `curl` the endpoint for the reason.
+
+No response at all means the server is down, or hung on a permission prompt -- the documented
+failure mode is a hang rather than a crash, so give the monitor a timeout.
+
+A monitor running on the host cannot report that the host itself is gone. Cover that separately,
+with something off the machine.
 
 It can also flag an archive that has received nothing recently, but this is **off by default**
 (`MAX_QUIET_SECONDS=0`) and deserves care. The age of the newest message cannot tell "Messages has
